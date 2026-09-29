@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Colours are stored as space-separated RGB channels rather than as hex, so Tailwind
+       can apply an opacity modifier: `border-error/30` compiles to
+       `rgb(var(--color-error) / 0.3)`. With a hex value in the variable there is nothing
+       for Tailwind to inject alpha into, and the class compiles to *nothing at all* —
+       which is how `bg-primary/10`, `border-error/30` and friends were silently rendering
+       no colour anywhere in the app. */
+    --color-primary: 37 99 235;
+    --color-primary-dark: 29 78 216;
+    --color-primary-light: 59 130 246;
+    --color-primary-subtle: 239 246 255;
+    --color-secondary: 245 158 11;
+    --color-background: 248 250 252;
+    --color-surface: 255 255 255;
+    --color-sidebar: 15 23 42;
+    --color-body: 15 23 42;
+    --color-muted: 100 116 139;
+    --color-border: 226 232 240;
+    --color-success: 16 185 129;
+    --color-success-subtle: 236 253 245;
+    --color-warning: 245 158 11;
+    --color-warning-subtle: 255 251 235;
+    --color-error: 239 68 68;
+    --color-error-subtle: 254 242 242;
+
+    --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    /* Every currency figure in the app uses this. Digits in a monospace face line up
+       vertically, which is the whole point when comparing amounts down a column. */
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --text-xs: 0.75rem;
+    --text-sm: 0.875rem;
+    --text-base: 1rem;
+    --text-lg: 1.125rem;
+    --text-xl: 1.25rem;
+    --text-2xl: 1.5rem;
+    --text-3xl: 1.875rem;
+    --text-4xl: 2.25rem;
+    --text-5xl: 3rem;
+
+    --leading-xs: 1rem;
+    --leading-sm: 1.25rem;
+    --leading-base: 1.5rem;
+    --leading-lg: 1.75rem;
+    --leading-xl: 1.75rem;
+    --leading-2xl: 2rem;
+    --leading-3xl: 2.25rem;
+    --leading-4xl: 2.5rem;
+    --leading-5xl: 3.25rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-body font-sans antialiased;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn bg-primary text-white shadow-primary hover:bg-primary-dark hover:shadow-primary-md active:scale-[0.98];
+  }
+
+  .btn-secondary {
+    @apply btn bg-surface text-body border border-border hover:bg-slate-50 active:scale-[0.98];
+  }
+
+  .btn-ghost {
+    @apply btn text-muted hover:text-body hover:bg-slate-100;
+  }
+
+  .card {
+    @apply bg-surface rounded-2xl border border-border shadow-card;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-body placeholder:text-muted transition-all duration-200 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary;
+  }
+
+  .label {
+    @apply block text-sm font-semibold text-body mb-1.5;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold;
+  }
+}

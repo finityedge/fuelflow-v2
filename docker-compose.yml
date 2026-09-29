@@ -1,0 +1,146 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: fuelflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fuelflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fuelflow}
+      POSTGRES_DB: ${POSTGRES_DB:-fuelflow}
+    ports:
+      # Host port first, container port second: Postgres still listens on 5432 inside the
+      # container, and the backend and worker reach it as `postgres:5432` over the compose
+      # network without ever touching this mapping. This line only decides which port
+      # Windows can connect to.
+      #
+      # Defaults to 5433, not 5432. A native PostgreSQL 17 Windows service
+      # (postgresql-x64-17) runs on this machine and holds 0.0.0.0:5432 from boot; Docker
+      # Desktop can then only bind the IPv6 side, so a host connection to 127.0.0.1:5432
+      # lands on the native server instead of this container and reports the credentials
+      # as invalid. Keep this in step with DATABASE_URL in `.env`.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fuelflow} -d ${POSTGRES_DB:-fuelflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: fuelflow-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    container_name: fuelflow-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${BACKEND_PORT:-3000}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-fuelflow}:${POSTGRES_PASSWORD:-fuelflow}@postgres:5432/${POSTGRES_DB:-fuelflow}
+      # Built from a host and a port rather than taken wholesale as `${REDIS_URL:-...}`,
+      # which looks equivalent and is not. The root `.env` sets REDIS_URL to
+      # redis://localhost:6379 for running the backend directly on the host, and compose
+      # reads `.env` — so the fallback never applied and every container was handed the
+      # host's address. Inside a container `localhost` is the container itself, where
+      # nothing listens on 6379, and because the queue connection sets
+      # `maxRetriesPerRequest: null` the failing command is retried forever instead of
+      # throwing: the upload request hangs with no error, and the worker logs
+      # "listening on queue" without ever being connected. DATABASE_URL is already built
+      # this way for the same reason.
+      REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      STORAGE_DIR: /app/storage/pdfs
+    volumes:
+      - pdf-storage:/app/storage/pdfs
+    ports:
+      - "3000:3000"
+
+  # Parsing runs in its own process so a slow or crashing parse cannot tie up the API.
+  # Same image as the backend, different entrypoint.
+  #
+  # It mounts the same PDF volume as the backend, and that is not a detail: the backend
+  # writes the uploaded file and the worker reads it back, so if the two ever disagree
+  # about where that directory is, every report stays PENDING forever with no error
+  # anywhere. A named volume only shares across containers on one host — a multi-host or
+  # serverless deployment would need object storage and a signed URL instead.
+  worker:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    container_name: fuelflow-worker
+    restart: unless-stopped
+    command: ["dumb-init", "node", "dist/worker.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-fuelflow}:${POSTGRES_PASSWORD:-fuelflow}@postgres:5432/${POSTGRES_DB:-fuelflow}
+      # Same construction as the backend's, and for the same reason: see the note there.
+      # A worker whose Redis connection never establishes still logs "listening on queue",
+      # so this failure is invisible from the logs alone.
+      REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      STORAGE_DIR: /app/storage/pdfs
+      # How many reports to parse at once. Each parse is mostly CPU-bound PDF work.
+      PARSE_CONCURRENCY: ${PARSE_CONCURRENCY:-2}
+    volumes:
+      - pdf-storage:/app/storage/pdfs
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    container_name: fuelflow-frontend
+    restart: unless-stopped
+    environment:
+      NGINX_PORT: 80
+    expose:
+      - "80"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: fuelflow-caddy
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      CADDY_BACKEND_HOST: ${CADDY_BACKEND_HOST:-backend:3000}
+      CADDY_FRONTEND_HOST: ${CADDY_FRONTEND_HOST:-frontend:80}
+
+volumes:
+  postgres-data:
+  redis-data:
+  # The uploaded PDFs. Fixed at /app/storage/pdfs inside the containers rather than taken
+  # from STORAGE_DIR, because that variable is a relative path for running the backend
+  # outside Docker and a relative volume target is not valid here.
+  pdf-storage:

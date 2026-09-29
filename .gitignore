@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Turbo
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+.pnpm-debug.log*
+
+# OS / Editor
+.DS_Store
+.vscode/settings.json
+.idea/
+
+# Testing
+coverage/
+
+# Prisma
+*.db
+*.db-journal
+
+# Uploaded shift-report PDFs. These are a customer's own financial documents and must
+# never be committed; in Docker they live in the pdf-storage volume instead.
+apps/backend/storage/
+
+# Docker
+.dockerignore

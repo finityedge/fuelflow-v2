@@ -1,0 +1,13 @@
+{
+    auto_https off
+}
+
+:80 {
+    encode gzip
+
+    handle /api/* {
+        reverse_proxy {$CADDY_BACKEND_HOST:backend:3000}
+    }
+
+    reverse_proxy {$CADDY_FRONTEND_HOST:frontend:80}
+}

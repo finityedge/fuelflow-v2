@@ -1,0 +1,147 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stations Station[]
+  users    User[]
+}
+
+model Station {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  name      String
+  location  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shiftReports     ShiftReport[]
+  stationAssignments StationAssignment[]
+}
+
+enum UserRole {
+  OWNER
+  MANAGER
+  ATTENDANT
+}
+
+model User {
+  id            String   @id @default(uuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  email         String
+  passwordHash  String
+  role          UserRole
+  refreshToken  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  stationAssignments StationAssignment[]
+
+  @@unique([email])
+}
+
+model StationAssignment {
+  id        String   @id @default(uuid())
+  userId    String
+  stationId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  station   Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, stationId])
+}
+
+enum ShiftReportStatus {
+  PENDING
+  PARSED
+  NEEDS_REVIEW
+  FAILED
+}
+
+/// How sure the parser is of a single field. A field can be LOW and still correct —
+/// that is exactly why it is flagged for a human rather than discarded.
+enum FieldConfidence {
+  HIGH
+  LOW
+}
+
+/// The four areas the review screen groups fields into. Mirrors ExtractedFieldGroup
+/// in the parser's pure types.
+enum ExtractedFieldGroup {
+  CASH_PAYMENTS
+  CREDIT_SALES
+  ATTENDANT_RECONCILIATION
+  TANK_READINGS
+}
+
+model ShiftReport {
+  id           String            @id @default(uuid())
+  tenantId     String
+  stationId    String
+  station      Station           @relation(fields: [stationId], references: [id])
+  status       ShiftReportStatus @default(PENDING)
+  /// Read out of the report during parsing, so it is null until the parse succeeds.
+  /// Nullable rather than guessed: a wrong date is worse than a blank one.
+  reportDate   DateTime?
+  /// Storage key of the uploaded PDF, relative to STORAGE_DIR.
+  pdfFileUrl   String?
+  /// Original filename as uploaded, so a manager can recognise the file again.
+  pdfFileName  String?
+  uploadedAt   DateTime          @default(now())
+  /// Why the parse failed. Set only when status is FAILED, and always a sentence a
+  /// human can act on rather than a stack trace.
+  failureReason String?
+  /// Full parser output, kept verbatim for audit and debugging.
+  parsedData   Json?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  extractedFields ExtractedField[]
+
+  @@index([tenantId, uploadedAt])
+}
+
+model ExtractedField {
+  id            String   @id @default(uuid())
+  shiftReportId String
+  shiftReport   ShiftReport @relation(fields: [shiftReportId], references: [id], onDelete: Cascade)
+  tenantId      String
+  /// Stable machine key, e.g. `cash_collected`, `credit_sale:T123ABC`.
+  fieldName     String
+  /// Human label shown on the review screen.
+  label         String
+  group         ExtractedFieldGroup
+  /// The literal text the value was read from, kept for audit.
+  rawValue      String?
+  /// The normalised value as text.
+  parsedValue   String?
+  /// Numeric interpretation, for arithmetic. Null for non-numeric fields.
+  amount        Float?
+  confidence    FieldConfidence
+  needsReview   Boolean  @default(false)
+  /// Why this field needs review, in the manager's language.
+  reviewNote    String?
+  /// The report text around this field, so a human can see what the parser saw.
+  regionText    String?
+  /// Set when a human replaces the parsed value; the flag clears at the same moment.
+  correctedAt   DateTime?
+  correctedBy   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([shiftReportId, group])
+}
