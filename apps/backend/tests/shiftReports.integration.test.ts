@@ -402,7 +402,9 @@ describe('reparsing', () => {
 describe('listing reports', () => {
   it('lists a station newest first and counts what still needs review', async () => {
     const id = await uploadAndProcess(TIDY_REPORT_LINES);
-    const items = await withTenantScope(tenantId, () => listShiftReports({ stationId }));
+    const { reports: items, total } = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId })
+    );
 
     const item = items.find((entry) => entry.id === id);
     expect(item).toBeDefined();
@@ -411,7 +413,92 @@ describe('listing reports', () => {
     expect(item!.stationName).toBe('Main Station');
     expect(item!.reportDate).toBe('2026-03-12');
 
+    // The row carries its own reconciliation, which is the figure the list renders. A list
+    // that had to ask per row would show no variance at all.
+    expect(item!.summary.variance).toBeTypeOf('number');
+    // "A person is needed here" and "this variance may still move" are different questions,
+    // and this row is the proof: the tidy fixture's flagged figure is the cashback
+    // adjustment, which the subtraction does not read. So the row must be able to carry a
+    // "1 to review" pill beside a variance that is already final.
+    expect(item!.summary.provisional).toBe(false);
+    expect(item!.needsReviewCount).toBe(1);
+
     const uploadedTimes = items.map((entry) => Date.parse(entry.uploadedAt));
     expect([...uploadedTimes].sort((a, b) => b - a)).toEqual(uploadedTimes);
+    expect(total).toBeGreaterThanOrEqual(items.length);
+  }, 60_000);
+
+  it('counts every match rather than the page it returns', async () => {
+    await uploadAndProcess(TIDY_REPORT_LINES);
+    await uploadAndProcess(TIDY_REPORT_LINES);
+
+    const page = await withTenantScope(tenantId, () => listShiftReports({ stationId, limit: 1 }));
+
+    expect(page.reports).toHaveLength(1);
+    // "Showing 1 of N" is only true if N is the count of matches, not the count returned.
+    expect(page.total).toBeGreaterThan(1);
+  }, 60_000);
+
+  it('walks the list with an offset without repeating a row', async () => {
+    const first = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, limit: 1, offset: 0 })
+    );
+    const second = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, limit: 1, offset: 1 })
+    );
+
+    expect(second.reports[0]!.id).not.toBe(first.reports[0]!.id);
+    // The total is the size of the result set, so it does not move as the page does.
+    expect(second.total).toBe(first.total);
+  }, 60_000);
+
+  it('narrows by status', async () => {
+    const failed = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, status: 'FAILED' })
+    );
+
+    expect(failed.reports.every((entry) => entry.status === 'FAILED')).toBe(true);
+    const needsReview = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, status: 'NEEDS_REVIEW' })
+    );
+    expect(needsReview.reports.every((entry) => entry.status === 'NEEDS_REVIEW')).toBe(true);
+  }, 60_000);
+
+  it('narrows by the report’s own date, not the upload date', async () => {
+    // Uploaded now, but the shift it describes is in March 2026 — so a window over that
+    // month must include it, and a window that stopped today would be the wrong question
+    // answered confidently.
+    await uploadAndProcess(TIDY_REPORT_LINES);
+
+    const inWindow = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, from: '2026-03-01', to: '2026-03-31' })
+    );
+    expect(inWindow.total).toBeGreaterThan(0);
+    expect(inWindow.reports.every((entry) => entry.reportDate?.startsWith('2026-03'))).toBe(true);
+
+    // The `to` day is inclusive: a range ending on the 12th still contains the 12th, and
+    // stops before the 14th the partial fixture is dated.
+    const toTheDay = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, from: '2026-03-12', to: '2026-03-12' })
+    );
+    expect(toTheDay.total).toBeGreaterThan(0);
+    expect(toTheDay.reports.every((entry) => entry.reportDate === '2026-03-12')).toBe(true);
+
+    const outside = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, from: '2020-01-01', to: '2020-01-02' })
+    );
+    expect(outside.total).toBe(0);
+    expect(outside.reports).toEqual([]);
+  }, 60_000);
+
+  it('returns nothing for a station the caller is not assigned to', async () => {
+    // The route passes a manager's assignment list here; `in: []` has to mean "no reports"
+    // rather than "no filter", which is the failure mode that leaks another station's takings.
+    const { reports, total } = await withTenantScope(tenantId, () =>
+      listShiftReports({ restrictToStationIds: [] })
+    );
+
+    expect(reports).toEqual([]);
+    expect(total).toBe(0);
   }, 60_000);
 });

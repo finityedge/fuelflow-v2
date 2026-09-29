@@ -10,7 +10,8 @@
 import type {
   ExtractedField,
   ShiftReportDetail,
-  ShiftReportListItem,
+  ShiftReportListPage,
+  ShiftReportState,
 } from '@fuelflow/shared';
 import { apiClient, getAccessToken } from './api.js';
 
@@ -120,24 +121,53 @@ export async function getShiftReport(id: string): Promise<ShiftReportDetail> {
   return (await res.json()) as ShiftReportDetail;
 }
 
-export async function listShiftReports(options: { stationId?: string; limit?: number } = {}): Promise<
-  ShiftReportListItem[]
-> {
-  const params = new URLSearchParams();
-  if (options.stationId) {
-    params.set('stationId', options.stationId);
-  }
-  if (options.limit) {
-    params.set('limit', String(options.limit));
-  }
-  const query = params.toString();
+/** The filters the list understands, matching the backend's query schema. */
+export interface ShiftReportListQuery {
+  stationId?: string;
+  status?: ShiftReportState;
+  /** Inclusive UTC ISO days, matched against the report's own date. */
+  from?: string;
+  to?: string;
+  limit?: number;
+  /** How many matching reports to skip, for "load more". */
+  offset?: number;
+}
 
-  const res = await apiClient(`/shift-reports${query ? `?${query}` : ''}`);
+/**
+ * One page of reports, plus how many the filter matched in total.
+ *
+ * The total is what lets the screen say "showing 25 of 63" instead of stopping at 25 and
+ * leaving the manager to conclude the other 38 do not exist.
+ */
+export async function listShiftReports(
+  query: ShiftReportListQuery = {}
+): Promise<ShiftReportListPage> {
+  const params = new URLSearchParams();
+  if (query.stationId) {
+    params.set('stationId', query.stationId);
+  }
+  if (query.status) {
+    params.set('status', query.status);
+  }
+  if (query.from) {
+    params.set('from', query.from);
+  }
+  if (query.to) {
+    params.set('to', query.to);
+  }
+  if (query.limit) {
+    params.set('limit', String(query.limit));
+  }
+  if (query.offset) {
+    params.set('offset', String(query.offset));
+  }
+  const search = params.toString();
+
+  const res = await apiClient(`/shift-reports${search ? `?${search}` : ''}`);
   if (!res.ok) {
     throw await readError(res, 'Reports could not be loaded.');
   }
-  const body = (await res.json()) as { reports: ShiftReportListItem[] };
-  return body.reports;
+  return (await res.json()) as ShiftReportListPage;
 }
 
 export async function correctField(

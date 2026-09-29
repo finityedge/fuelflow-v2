@@ -15,9 +15,15 @@
 import { randomUUID } from 'node:crypto';
 import type {
   ExtractedField as ExtractedFieldRow,
+  Prisma,
   ShiftReport as ShiftReportRow,
 } from '@prisma/client';
-import type { ReconciliationSummary, ShiftReportDetail, ShiftReportListItem } from '@fuelflow/shared';
+import type {
+  ReconciliationSummary,
+  ShiftReportDetail,
+  ShiftReportListItem,
+  ShiftReportState,
+} from '@fuelflow/shared';
 import { prisma } from '../prisma/client.js';
 import { readPdf, savePdf } from '../config/storage.js';
 import { enqueuePdfParse } from '../jobs/queues.js';
@@ -199,31 +205,127 @@ export async function getShiftReportDetail(shiftReportId: string): Promise<Shift
   };
 }
 
-export async function listShiftReports(options: {
+export interface ListShiftReportsOptions {
+  /** One station, already access-checked by the route. */
   stationId?: string;
+  /**
+   * The stations this user may see. `undefined` means every station in the tenant (an
+   * owner); an empty array means none, and must yield no reports rather than all of them —
+   * `in: []` matches nothing, which is the right answer.
+   */
+  restrictToStationIds?: string[];
+  status?: ShiftReportState;
+  /** Inclusive ISO days, matched against the report's own date. */
+  from?: string;
+  to?: string;
   limit?: number;
-}): Promise<ShiftReportListItem[]> {
-  const reports = await prisma.shiftReport.findMany({
-    where: options.stationId ? { stationId: options.stationId } : undefined,
-    orderBy: { uploadedAt: 'desc' },
-    take: options.limit ?? 25,
-    include: {
-      station: { select: { name: true } },
-      _count: { select: { extractedFields: { where: { needsReview: true } } } },
-    },
+  offset?: number;
+}
+
+/**
+ * The date a report belongs to: the shift's own date, or the upload date when the parser
+ * never read one.
+ *
+ * Written as an `OR` rather than a `COALESCE` because that is the form Prisma can push
+ * into SQL, and it is kept in the database rather than applied after loading so that the
+ * count below covers exactly the rows the page will show. A report uploaded today can
+ * carry a date from last month, so the two are genuinely different questions and the
+ * report's own date is the one that answers "which shift is this".
+ *
+ * The bounds are UTC midnights, which is not arbitrary: `reportDate` is written as UTC
+ * midnight when the parse succeeds, and the API hands its day back as a UTC day key, so a
+ * `from`/`to` pair matches those days exactly. The `uploadedAt` branch is a real timestamp
+ * and so only approximately bounded — it exists for reports whose date was never read, and
+ * being a few hours out at the edge of a range there is not worth a timezone this app does
+ * not have.
+ */
+function dayRangeFilter(from?: string, to?: string): Prisma.ShiftReportWhereInput[] {
+  if (!from && !to) {
+    return [];
+  }
+
+  const start = from ? new Date(`${from}T00:00:00.000Z`) : undefined;
+  // The end of the day named, not the start of it: "to 20 September" that excluded
+  // everything uploaded on the 20th would be a filter nobody meant to apply.
+  const end = to ? new Date(`${to}T23:59:59.999Z`) : undefined;
+  const bounds = {
+    ...(start ? { gte: start } : {}),
+    ...(end ? { lte: end } : {}),
+  };
+
+  return [
+    { reportDate: bounds },
+    { reportDate: null, uploadedAt: bounds },
+  ];
+}
+
+/**
+ * One page of the reports list.
+ *
+ * The tenant is not filtered here on purpose — the Prisma client extension in
+ * `prisma/client.ts` adds it to every `ShiftReport` query, reads included, so a `tenantId`
+ * in this `where` would be the same clause written twice. What *is* here is the station
+ * filter, which the extension knows nothing about, and it is applied in the query rather
+ * than to the result because the count below has to be the count of rows this person can
+ * see. A page filtered after being cut short shows fewer rows than it claims to.
+ */
+export async function listShiftReports(
+  options: ListShiftReportsOptions
+): Promise<{ reports: ShiftReportListItem[]; total: number }> {
+  const dayRange = dayRangeFilter(options.from, options.to);
+
+  const where: Prisma.ShiftReportWhereInput = {
+    ...(options.stationId
+      ? { stationId: options.stationId }
+      : options.restrictToStationIds
+        ? { stationId: { in: options.restrictToStationIds } }
+        : {}),
+    ...(options.status ? { status: options.status } : {}),
+    ...(dayRange.length > 0 ? { OR: dayRange } : {}),
+  };
+
+  // Only the columns the row renders and the three the reconciliation reads. The list
+  // never shows a label or a region's text, and on a page of a hundred rows that is a lot
+  // of payload to send for nothing.
+  const [reports, total] = await Promise.all([
+    prisma.shiftReport.findMany({
+      where,
+      orderBy: { uploadedAt: 'desc' },
+      take: options.limit ?? 25,
+      skip: options.offset ?? 0,
+      select: {
+        id: true,
+        stationId: true,
+        pdfFileName: true,
+        reportDate: true,
+        status: true,
+        uploadedAt: true,
+        failureReason: true,
+        station: { select: { name: true } },
+        extractedFields: { select: { fieldName: true, amount: true, needsReview: true } },
+      },
+    }),
+    prisma.shiftReport.count({ where }),
+  ]);
+
+  const rows = reports.map((report) => {
+    const summary = computeSummary(report.extractedFields);
+
+    return {
+      id: report.id,
+      stationId: report.stationId,
+      stationName: report.station?.name ?? null,
+      fileName: report.pdfFileName,
+      reportDate: report.reportDate ? report.reportDate.toISOString().slice(0, 10) : null,
+      status: report.status,
+      uploadedAt: report.uploadedAt.toISOString(),
+      failureReason: report.failureReason,
+      needsReviewCount: report.extractedFields.filter((field) => field.needsReview).length,
+      summary,
+    };
   });
 
-  return reports.map((report) => ({
-    id: report.id,
-    stationId: report.stationId,
-    stationName: report.station?.name ?? null,
-    fileName: report.pdfFileName,
-    reportDate: report.reportDate ? report.reportDate.toISOString().slice(0, 10) : null,
-    status: report.status,
-    uploadedAt: report.uploadedAt.toISOString(),
-    failureReason: report.failureReason,
-    needsReviewCount: report._count.extractedFields,
-  }));
+  return { reports: rows, total };
 }
 
 /**

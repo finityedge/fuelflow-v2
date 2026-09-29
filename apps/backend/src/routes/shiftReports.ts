@@ -120,16 +120,16 @@ export async function shiftReportRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: 'Forbidden: station access denied' });
     }
 
-    const reports = await listShiftReports(query);
+    // A manager assigned to specific stations should not see another station's reports.
+    // This travels into the query rather than being applied to the result: filtering a
+    // page after it has been cut short shows fewer rows than it claims to, and the count
+    // that says "showing 25 of 63" would be counting rows the page will not show.
+    const page = await listShiftReports({
+      ...query,
+      restrictToStationIds: user.role === UserRole.OWNER ? undefined : user.stationIds,
+    });
 
-    // A manager assigned to specific stations should not see another station's reports
-    // in the list, so the filter is applied here rather than trusted to the query string.
-    const visible =
-      user.role === UserRole.OWNER
-        ? reports
-        : reports.filter((report) => user.stationIds.includes(report.stationId));
-
-    return reply.send({ reports: visible });
+    return reply.send(page);
   });
 
   app.get<{ Params: { id: string } }>('/shift-reports/:id', async (request, reply) => {

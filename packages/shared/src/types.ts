@@ -128,7 +128,7 @@ export interface ShiftReportDetail {
   needsReviewCount: number;
 }
 
-/** One row of the recent-reports list. */
+/** One row of the reports list. */
 export interface ShiftReportListItem {
   id: string;
   stationId: string;
@@ -144,11 +144,34 @@ export interface ShiftReportListItem {
   uploadedAt: string;
   failureReason?: string | null;
   needsReviewCount: number;
+  /**
+   * The row's reconciliation, carried on the row rather than fetched per report.
+   *
+   * The list and the dashboard's recent table both need it, and a list that has to ask
+   * for each row's variance separately is a list that shows no variance at all. It is
+   * computed from the same three columns in both places, so a row cannot come out with
+   * one number in the table and another on the screen it links to.
+   */
+  summary: ReconciliationSummary;
 }
 
-/** One row of the dashboard's recent-reports table: the list row plus its reconciliation. */
-export interface DashboardReportRow extends ShiftReportListItem {
-  summary: ReconciliationSummary;
+/**
+ * One row of the dashboard's recent-reports table.
+ *
+ * It is the list row, exactly — the variance moved onto `ShiftReportListItem` when the
+ * reports list started showing it too, and an alias is kept so the dashboard's imports do
+ * not have to change to say the same thing.
+ */
+export type DashboardReportRow = ShiftReportListItem;
+
+/** A page of the reports list, with the count the filter matched. */
+export interface ShiftReportListPage {
+  reports: ShiftReportListItem[];
+  /**
+   * How many reports the filter matched in total, not how many are in `reports` — this is
+   * what lets the list say "showing 25 of 63" instead of quietly stopping at 25.
+   */
+  total: number;
 }
 
 /** One point on the variance trend chart. */

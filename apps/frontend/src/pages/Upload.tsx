@@ -114,7 +114,8 @@ export function Upload() {
     setRecentLoading(true);
     setRecentError(null);
     try {
-      setRecent(await listShiftReports({ limit: RECENT_LIMIT }));
+      const page = await listShiftReports({ limit: RECENT_LIMIT });
+      setRecent(page.reports);
     } catch (error) {
       setRecentError(
         error instanceof Error ? error.message : 'Recent uploads could not be loaded.'

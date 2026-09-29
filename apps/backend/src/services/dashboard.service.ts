@@ -6,6 +6,7 @@ import type {
   DashboardVarianceTotals,
   ShiftReportListItem,
 } from '@fuelflow/shared';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../prisma/client.js';
 import { computeSummary } from '../parsing/petronite.js';
 import type { SummaryInput } from '../parsing/types.js';
@@ -36,6 +37,10 @@ export interface DashboardOptions {
    * The stations this user may see at all. `undefined` means every station in the tenant
    * (an owner); an empty array means none, and must yield an empty dashboard rather than
    * an unrestricted one — `in: []` matches nothing, which is the correct answer here.
+   *
+   * The tenant itself is not a parameter: the Prisma client extension scopes every
+   * `ShiftReport` query to the request's tenant, reads included, so "every station in the
+   * tenant" is exactly what an owner gets.
    */
   restrictToStationIds?: string[];
 }
@@ -48,14 +53,14 @@ export async function getDashboardSummary(options: DashboardOptions = {}): Promi
   const periodDays = options.periodDays ?? DEFAULT_PERIOD_DAYS;
   const since = Date.now() - periodDays * 24 * 60 * 60 * 1000;
 
-  const stationFilter = options.stationId
+  const where: Prisma.ShiftReportWhereInput = options.stationId
     ? { stationId: options.stationId }
     : options.restrictToStationIds
       ? { stationId: { in: options.restrictToStationIds } }
       : {};
 
   const reports = await prisma.shiftReport.findMany({
-    where: stationFilter,
+    where,
     orderBy: { uploadedAt: 'desc' },
     take: MAX_SCANNED_REPORTS,
     select: {
@@ -168,8 +173,9 @@ export async function getDashboardSummary(options: DashboardOptions = {}): Promi
         uploadedAt: report.uploadedAt.toISOString(),
         failureReason: report.failureReason,
         needsReviewCount: flagged,
+        summary,
       };
-      rows.push({ ...listItem, summary });
+      rows.push(listItem);
     }
   }
 

@@ -10,9 +10,29 @@ export const correctFieldBodySchema = z.object({
   parsedValue: z.string().min(1).max(120),
 });
 
+/**
+ * The statuses a list can be narrowed to.
+ *
+ * These are the report's own states and nothing else. A "balanced" filter is deliberately
+ * absent even though it is the obvious thing to want: balance is a fact about the money,
+ * `status` is a fact about whether a human is still needed, and the two disagree often
+ * enough that a filter named after one and implemented with the other would lie. A report
+ * whose every figure was read cleanly can still be 3,000,000 TZS short.
+ */
+export const LIST_STATUS_VALUES = ['PENDING', 'NEEDS_REVIEW', 'PARSED', 'FAILED'] as const;
+
+/** An ISO calendar day, which is how a date range arrives from a date input. */
+const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected a date in YYYY-MM-DD form');
+
 export const listShiftReportsQuerySchema = z.object({
   stationId: z.string().min(1).max(100).optional(),
+  status: z.enum(LIST_STATUS_VALUES).optional(),
+  /** Inclusive, and compared against the report's date — see `listShiftReports`. */
+  from: isoDay.optional(),
+  to: isoDay.optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+  /** How many matching reports to skip, for "load more". */
+  offset: z.coerce.number().int().min(0).max(100_000).optional(),
 });
 
 /** Accepted upload types. PDFs only: the parser reads a text layer, nothing else. */
