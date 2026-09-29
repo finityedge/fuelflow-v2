@@ -240,6 +240,35 @@ export function RefreshIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function TrendUpIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M3 17l6-6 4 4 8-8" />
+      <path d="M15 7h6v6" />
+    </BaseIcon>
+  );
+}
+
+export function TrendDownIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M3 7l6 6 4-4 8 8" />
+      <path d="M15 17h6v-6" />
+    </BaseIcon>
+  );
+}
+
+export function ScaleIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M12 3v18" />
+      <path d="M5 7h14" />
+      <path d="M5 7l-3 7a3 3 0 0 0 6 0z" />
+      <path d="M19 7l-3 7a3 3 0 0 0 6 0z" />
+    </BaseIcon>
+  );
+}
+
 export function AlertCircleIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <BaseIcon {...props}>

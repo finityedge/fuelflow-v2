@@ -14,6 +14,7 @@ import { useAuthStore } from '../stores/authStore.js';
 import { canCorrect } from '../lib/rbac.js';
 import { correctField, getShiftReport, reparseShiftReport } from '../lib/shiftReports.js';
 import { formatSignedTZS, formatTZS, formatReportDate } from '../lib/format.js';
+import { varianceTone, type VarianceTone } from '../lib/variance.js';
 
 const GROUP_ORDER: ExtractedFieldGroup[] = [
   'CASH_PAYMENTS',
@@ -44,24 +45,7 @@ function groupHeading(field: ExtractedField): string | null {
   return null;
 }
 
-type Tone = 'balanced' | 'short' | 'over' | 'unknown';
-
-/**
- * What the variance means, not just its sign.
- *
- * Positive means money went out of the pumps that no form of payment accounts for — that
- * is the question this whole screen exists to answer. Negative means more was recorded
- * as collected than was sold, which is a data-entry problem rather than a loss.
- */
-function varianceTone(variance: number | null): Tone {
-  if (variance === null) {
-    return 'unknown';
-  }
-  if (variance === 0) {
-    return 'balanced';
-  }
-  return variance > 0 ? 'short' : 'over';
-}
+type Tone = VarianceTone;
 
 const TONE_STYLES: Record<Tone, { panel: string; label: string; text: string; headline: string }> = {
   balanced: {

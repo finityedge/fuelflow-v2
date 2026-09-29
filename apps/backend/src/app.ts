@@ -8,6 +8,7 @@ import type { onRouteHookHandler, RouteOptions } from 'fastify';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { shiftReportRoutes } from './routes/shiftReports.js';
+import { dashboardRoutes } from './routes/dashboard.js';
 import { stationRoutes } from './routes/stations.js';
 import { authenticate } from './middleware/auth.js';
 import { withTenantScope } from './prisma/client.js';
@@ -55,6 +56,7 @@ export async function buildApp() {
   await app.register(healthRoutes, { prefix: '/api' });
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(shiftReportRoutes, { prefix: '/api' });
+  await app.register(dashboardRoutes, { prefix: '/api' });
   await app.register(stationRoutes, { prefix: '/api' });
 
   if (process.env.NODE_ENV !== 'production') {

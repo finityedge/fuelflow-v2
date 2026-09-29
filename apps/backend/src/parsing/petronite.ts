@@ -23,6 +23,7 @@ import type {
   ParsedField,
   ParseResult,
   ParseSummary,
+  SummaryInput,
   TemplateDiagnostics,
 } from './types.js';
 
@@ -780,7 +781,7 @@ function detectTemplate(lines: Line[]): TemplateDiagnostics {
  * correction moves the headline variance through exactly the same arithmetic that
  * produced it in the first place.
  */
-export function computeSummary(fields: ParsedField[]): ParseSummary {
+export function computeSummary(fields: SummaryInput[]): ParseSummary {
   const byName = new Map(fields.map((field) => [field.fieldName, field]));
 
   const scalarAmount = (name: string): number | null => byName.get(name)?.amount ?? null;
@@ -805,7 +806,7 @@ export function computeSummary(fields: ParsedField[]): ParseSummary {
     ...creditFields,
     byName.get('pump_totalizer_sales'),
     byName.get('cash_collected'),
-  ].filter((field): field is ParsedField => Boolean(field));
+  ].filter((field): field is SummaryInput => Boolean(field));
 
   const provisional = contributors.some((field) => field.needsReview);
 

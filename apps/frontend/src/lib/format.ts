@@ -123,3 +123,68 @@ export function formatRelativeTime(value: string | null | undefined): string {
   }
   return formatTimestamp(value);
 }
+
+/**
+ * `1234567` -> `1.2M`, `45000` -> `45k`.
+ *
+ * For chart axis ticks only. A tick reading `TZS 1,200,000` is wider than the plot area it
+ * labels, and the unit is stated once in the axis title instead of on every tick. Never use
+ * this for a figure a manager has to read exactly — that is `formatTZS`.
+ */
+export function formatCompactNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '—';
+  }
+  const magnitude = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  if (magnitude >= 1_000_000) {
+    return `${sign}${(magnitude / 1_000_000).toFixed(magnitude >= 10_000_000 ? 0 : 1)}M`;
+  }
+  if (magnitude >= 1_000) {
+    return `${sign}${(magnitude / 1_000).toFixed(magnitude >= 10_000 ? 0 : 1)}k`;
+  }
+  return `${sign}${Math.round(magnitude)}`;
+}
+
+/** `2026-09-29T...` -> `Tuesday, 29 September 2026`. */
+export function formatLongDate(value: Date = new Date()): string {
+  return value.toLocaleDateString('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+/**
+ * `2026-03-12` -> `12 Mar`. The x-axis of a 30-day chart has no room for the year, and
+ * every point in the window is in the same one or two months.
+ */
+export function formatShortDate(value: string | null | undefined): string {
+  if (!value) {
+    return '—';
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+/**
+ * `9` -> `Good morning`.
+ *
+ * Time-of-day greeting for the dashboard heading. Boundaries are the informal ones a person
+ * would use, not solar noon: before midday is morning, before 17:00 afternoon, after that
+ * evening.
+ */
+export function greetingFor(date: Date = new Date()): string {
+  const hour = date.getHours();
+  if (hour < 12) {
+    return 'Good morning';
+  }
+  if (hour < 17) {
+    return 'Good afternoon';
+  }
+  return 'Good evening';
+}

@@ -55,6 +55,17 @@ export interface TemplateDiagnostics {
   missingMarkers: string[];
 }
 
+/**
+ * The subset of a `ParsedField` the reconciliation arithmetic actually reads.
+ *
+ * `computeSummary` is called both on freshly parsed fields and on rows loaded back out of
+ * the database, and the second caller has no reason to select the nine columns it would
+ * never look at — the dashboard only needs the amounts. Typing the parameter to the three
+ * fields it touches lets both callers pass what they have. A full `ParsedField` still
+ * satisfies it, so the parser's own call sites are unchanged.
+ */
+export type SummaryInput = Pick<ParsedField, 'fieldName' | 'amount' | 'needsReview'>;
+
 export interface ParseResult {
   status: ParseStatus;
   /** Populated only when status is FAILED. */

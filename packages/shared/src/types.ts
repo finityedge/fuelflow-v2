@@ -146,6 +146,79 @@ export interface ShiftReportListItem {
   needsReviewCount: number;
 }
 
+/** One row of the dashboard's recent-reports table: the list row plus its reconciliation. */
+export interface DashboardReportRow extends ShiftReportListItem {
+  summary: ReconciliationSummary;
+}
+
+/** One point on the variance trend chart. */
+export interface DashboardTrendPoint {
+  reportId: string;
+  /** Report date when the parser read one, otherwise the upload date. Always an ISO day. */
+  date: string;
+  variance: number;
+  status: ShiftReportState;
+  /** True while a contributing figure still needs review, so this point may still move. */
+  provisional: boolean;
+}
+
+export interface DashboardTotals {
+  reports: number;
+  /** Parsed with nothing flagged. Not the same as the shift balancing. */
+  readCleanly: number;
+  /** Reports with at least one field waiting on a human. */
+  needsReview: number;
+  failed: number;
+  pending: number;
+  /** Individual fields flagged across every report in the period, not reports. */
+  fieldsFlagged: number;
+  /**
+   * Reports that exist but whose shift date falls outside the window.
+   *
+   * The period is measured from the date printed on the report, not from when it was
+   * uploaded, so a manager uploading a backlog of old paper reports gets a dashboard that
+   * is legitimately empty. Without this count the screen would say "nothing here" to
+   * someone who has just uploaded twelve of them, with nothing to explain why.
+   */
+  outsidePeriod: number;
+}
+
+/**
+ * Variance is split by direction rather than netted to one figure.
+ *
+ * A shift that is 100,000 short and a shift that is 100,000 over sum to zero, so a single
+ * "total variance" would report a month containing both as perfectly clean. That is the
+ * single most misleading number this screen could show, so the two directions are kept
+ * apart and the net is offered only alongside them.
+ */
+export interface DashboardVarianceTotals {
+  /** Sum of the positive variances: money that left the pumps with nothing accounting for it. */
+  unaccounted: number;
+  /** Sum of the negative variances as a positive magnitude: more recorded than sold. */
+  overCollected: number;
+  /** `unaccounted - overCollected`. Shown as context, never as the headline. */
+  net: number;
+  /** How many reports in the period yielded a variance at all. */
+  computed: number;
+  /** How many could not: a figure was unreadable, so any variance would be a guess. */
+  notComputed: number;
+  largest: {
+    reportId: string;
+    reportDate: string | null;
+    fileName: string | null;
+    variance: number;
+  } | null;
+}
+
+export interface DashboardSummary {
+  periodDays: number;
+  generatedAt: string;
+  totals: DashboardTotals;
+  variance: DashboardVarianceTotals;
+  trend: DashboardTrendPoint[];
+  recent: DashboardReportRow[];
+}
+
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
