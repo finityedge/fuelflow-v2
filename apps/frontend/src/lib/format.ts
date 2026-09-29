@@ -40,16 +40,54 @@ export function formatSignedTZS(value: number | null | undefined): string {
   return `${value > 0 ? '+' : '-'}TZS ${DECIMALS.format(Math.abs(value))}`;
 }
 
+/**
+ * A report's date, as a calendar day.
+ *
+ * A bare `2026-03-12` is read by `new Date` as UTC midnight, which is the *previous* day for
+ * anyone west of Greenwich — the same shift would be filed under two different dates
+ * depending on who opened it. Appending a local midnight keeps the day the parser read.
+ * Timestamps are already unambiguous, so they are passed through as they are.
+ */
+function parseCalendarDay(value: string): Date | null {
+  const dayOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const parsed = new Date(dayOnly ? `${value}T00:00:00` : value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 /** `2026-03-12` -> `12 Mar 2026`. Falls back to the raw string if it is not a date. */
 export function formatReportDate(value: string | null | undefined): string {
   if (!value) {
     return 'Date not read';
   }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = parseCalendarDay(value);
+  if (!parsed) {
     return value;
   }
   return parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+const LONG_DATE_OPTIONS: Intl.DateTimeFormatOptions = {
+  weekday: 'long',
+  day: 'numeric',
+  month: 'long',
+  year: 'numeric',
+};
+
+/**
+ * `2026-03-12` -> `Thursday, 12 March 2026`.
+ *
+ * The review screen's own heading. A weekday is the wrong detail for a table of shifts and
+ * the right one for a single shift a manager is checking against their memory of the day.
+ */
+export function formatReportDateLong(value: string | null | undefined): string {
+  if (!value) {
+    return 'Date not read';
+  }
+  const parsed = parseCalendarDay(value);
+  if (!parsed) {
+    return value;
+  }
+  return parsed.toLocaleDateString('en-GB', LONG_DATE_OPTIONS);
 }
 
 /** An ISO timestamp -> `12 Mar 2026, 14:05`. */
@@ -148,12 +186,7 @@ export function formatCompactNumber(value: number | null | undefined): string {
 
 /** `2026-09-29T...` -> `Tuesday, 29 September 2026`. */
 export function formatLongDate(value: Date = new Date()): string {
-  return value.toLocaleDateString('en-GB', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
+  return value.toLocaleDateString('en-GB', LONG_DATE_OPTIONS);
 }
 
 /**

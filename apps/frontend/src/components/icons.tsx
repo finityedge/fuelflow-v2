@@ -27,6 +27,60 @@ export function FuelIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+/** The affordance for correcting one figure. */
+export function PencilIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </BaseIcon>
+  );
+}
+
+/** A fuel pump, for the review screen's heading. */
+export function PumpIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16" />
+      <path d="M2 21h14" />
+      <path d="M14 9h2a2 2 0 0 1 2 2v6a1.5 1.5 0 0 0 3 0V9l-2-2" />
+      <path d="M7 8h4" />
+    </BaseIcon>
+  );
+}
+
+/** Money leaving an account, for the cash card. */
+export function WalletIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0 0 4h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5" />
+      <path d="M16 12h.01" />
+    </BaseIcon>
+  );
+}
+
+/** A vehicle plate, for the credit-sales card. */
+export function PlateIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <path d="M6 15V9h3l2 6" />
+      <path d="M14 9h4" />
+    </BaseIcon>
+  );
+}
+
+/** A storage tank, for the tank-readings card. */
+export function TankIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+    </BaseIcon>
+  );
+}
+
 export function HomeIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <BaseIcon {...props}>

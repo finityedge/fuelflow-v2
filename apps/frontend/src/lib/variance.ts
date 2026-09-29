@@ -61,3 +61,25 @@ export const VARIANCE_LABEL: Record<VarianceTone, string> = {
   over: 'More collected than sold',
   unknown: 'Variance cannot be calculated',
 };
+
+/**
+ * One word, for a pill beside a figure that has no room for a sentence.
+ *
+ * The full phrases above are for a headline. A per-row pill — an attendant, a tank — needs
+ * something that fits in a chip and still reads the same direction, which is why these are
+ * derived from the same tone rather than written per screen.
+ */
+export const VARIANCE_PILL: Record<VarianceTone, string> = {
+  balanced: 'Balanced',
+  short: 'Short',
+  over: 'Over',
+  unknown: 'Unread',
+};
+
+/** The chip's own colours. A pill carries a filled background, so it cannot reuse the text colours. */
+export const VARIANCE_PILL_STYLE: Record<VarianceTone, string> = {
+  balanced: 'bg-success-subtle text-success',
+  short: 'bg-error-subtle text-error',
+  over: 'bg-warning-subtle text-warning',
+  unknown: 'bg-slate-100 text-muted',
+};

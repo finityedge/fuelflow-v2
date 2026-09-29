@@ -1,78 +1,81 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import type { ExtractedField, ExtractedFieldGroup, ShiftReportDetail } from '@fuelflow/shared';
+import type { DashboardTrendPoint, ExtractedFieldGroup, ShiftReportDetail } from '@fuelflow/shared';
 import { Layout } from '../components/Layout.js';
+import { PageHeading } from '../components/PageHeading.js';
+import { VarianceHero } from '../components/VarianceHero.js';
+import { VarianceTrendChart } from '../components/VarianceTrendChart.js';
+import {
+  AttendantCard,
+  CashPaymentsCard,
+  CreditSalesCard,
+  TankReadingsCard,
+} from '../components/ReportGroupCards.js';
+import type { CorrectionSession } from '../components/FieldValue.js';
 import {
   AlertIcon,
+  BuildingIcon,
+  ChartIcon,
   CheckIcon,
   ChevronRightIcon,
-  CloseIcon,
+  ClockIcon,
   FileIcon,
+  InfoIcon,
   ReportsIcon,
 } from '../components/icons.js';
 import { useAuthStore } from '../stores/authStore.js';
 import { canCorrect } from '../lib/rbac.js';
 import { correctField, getShiftReport, reparseShiftReport } from '../lib/shiftReports.js';
-import { formatSignedTZS, formatTZS, formatReportDate } from '../lib/format.js';
-import { varianceTone, type VarianceTone } from '../lib/variance.js';
+import { getDashboard } from '../lib/dashboard.js';
+import { formatRelativeTime, formatReportDateLong } from '../lib/format.js';
 
-const GROUP_ORDER: ExtractedFieldGroup[] = [
-  'CASH_PAYMENTS',
-  'CREDIT_SALES',
-  'ATTENDANT_RECONCILIATION',
-  'TANK_READINGS',
-];
+/** How far back the trend beside the variance looks. Two months of shifts at one a day. */
+const TREND_DAYS = 30;
 
-const GROUP_LABELS: Record<ExtractedFieldGroup, string> = {
-  CASH_PAYMENTS: 'Cash & Payments',
-  CREDIT_SALES: 'Credit Sales',
-  ATTENDANT_RECONCILIATION: 'Attendant Reconciliation',
-  TANK_READINGS: 'Tank Readings',
+/** Which card a flagged figure sits in, so the review notice can send someone to it. */
+const CARD_FOR_GROUP: Record<ExtractedFieldGroup, { id: string; label: string }> = {
+  CASH_PAYMENTS: { id: 'card-cash', label: 'Cash & payments' },
+  CREDIT_SALES: { id: 'card-credit', label: 'Credit sales' },
+  ATTENDANT_RECONCILIATION: { id: 'card-attendants', label: 'Attendant reconciliation' },
+  TANK_READINGS: { id: 'card-tanks', label: 'Tank readings' },
 };
 
-/** Tank and attendant fields read as a block per tank/attendant, not as a flat list. */
-function groupHeading(field: ExtractedField): string | null {
-  if (field.fieldName.startsWith('tank:')) {
-    const tank = field.fieldName.split(':')[1];
-    return `Tank ${tank}`;
-  }
-  if (field.fieldName.startsWith('attendant:')) {
-    const parts = field.fieldName.split(':');
-    if (parts.length >= 3) {
-      return parts[1].replace(/_/g, ' ');
-    }
-  }
-  return null;
+function MetaChip({
+  icon: Icon,
+  children,
+  title,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  children: React.ReactNode;
+  title?: string;
+}) {
+  return (
+    <span
+      title={title}
+      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-muted"
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {children}
+    </span>
+  );
 }
 
-type Tone = VarianceTone;
-
-const TONE_STYLES: Record<Tone, { panel: string; label: string; text: string; headline: string }> = {
-  balanced: {
-    panel: 'bg-success-subtle border-success/30',
-    label: 'text-success',
-    text: 'text-success',
-    headline: 'Everything is accounted for',
-  },
-  short: {
-    panel: 'bg-error-subtle border-error/30',
-    label: 'text-error',
-    text: 'text-error',
-    headline: 'Money is unaccounted for',
-  },
-  over: {
-    panel: 'bg-warning-subtle border-warning/30',
-    label: 'text-warning',
-    text: 'text-warning',
-    headline: 'More collected than sold',
-  },
-  unknown: {
-    panel: 'bg-slate-100 border-border',
-    label: 'text-muted',
-    text: 'text-body',
-    headline: 'Variance cannot be calculated',
-  },
-};
+function StatusChip({ status, needsReviewCount }: { status: string; needsReviewCount: number }) {
+  if (status === 'PENDING') {
+    return <span className="badge bg-primary-subtle text-primary">Reading…</span>;
+  }
+  if (status === 'FAILED') {
+    return <span className="badge bg-error-subtle text-error">Could not be read</span>;
+  }
+  if (needsReviewCount > 0) {
+    return (
+      <span className="badge bg-warning-subtle text-warning">
+        {needsReviewCount} to review
+      </span>
+    );
+  }
+  return <span className="badge bg-success-subtle text-success">Reconciled</span>;
+}
 
 export function ShiftReport() {
   const { id } = useParams<{ id: string }>();
@@ -86,6 +89,16 @@ export function ShiftReport() {
   const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
   const [reparsing, setReparsing] = useState(false);
+
+  /**
+   * The station's other shifts, for the trend beside the variance. `null` means it has not
+   * arrived yet; an empty array means the station has no other reconciled shifts in the
+   * window. The two are different, and the card says so differently.
+   */
+  const [trend, setTrend] = useState<DashboardTrendPoint[] | null>(null);
+  const [trendFailed, setTrendFailed] = useState(false);
+  /** Bumped on every reload so the trend is refetched when a correction moves the figure. */
+  const [version, setVersion] = useState(0);
   const pollTimer = useRef<number | null>(null);
 
   const load = useCallback(async () => {
@@ -94,6 +107,7 @@ export function ShiftReport() {
     }
     const next = await getShiftReport(id);
     setDetail(next);
+    setVersion((current) => current + 1);
     return next;
   }, [id]);
 
@@ -151,6 +165,43 @@ export function ShiftReport() {
     };
   }, [detail, load]);
 
+  const stationId = detail?.report.stationId;
+  const reportStatus = detail?.report.status;
+
+  /**
+   * The trend is context, not the point of the screen.
+   *
+   * It is fetched separately and its failure is contained: the shift's own figures are
+   * already on the page and are what someone came here for. A broken chart call must never
+   * be able to take the variance down with it, so this deliberately does not touch
+   * `loadError` or the loading state that guards the rest of the page.
+   */
+  useEffect(() => {
+    if (!stationId || reportStatus === 'PENDING') {
+      return;
+    }
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const summary = await getDashboard({ stationId, periodDays: TREND_DAYS });
+        if (!cancelled) {
+          setTrend(summary.trend);
+          setTrendFailed(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setTrend([]);
+          setTrendFailed(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [stationId, reportStatus, version]);
+
   const handleCorrect = useCallback(
     async (fieldId: string, value: string) => {
       if (!id) {
@@ -160,8 +211,8 @@ export function ShiftReport() {
       setSaveError(null);
       try {
         await correctField(id, fieldId, value);
-        // Re-read rather than patch in place: the variance and the report's review state
-        // are both derived from the fields, and the server is the one that derives them.
+        // Re-read rather than patch in place: the variance, the per-row differences and the
+        // report's review state are all derived from the fields, and the server derives them.
         await load();
         setEditingFieldId(null);
       } catch (error) {
@@ -192,7 +243,7 @@ export function ShiftReport() {
   if (loading) {
     return (
       <Layout>
-        <div className="mx-auto max-w-4xl">
+        <div className="mx-auto max-w-7xl">
           <div className="card p-10 text-center">
             <span className="mx-auto mb-4 block h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
             <p className="text-sm text-muted">Loading report…</p>
@@ -205,7 +256,7 @@ export function ShiftReport() {
   if (loadError || !detail) {
     return (
       <Layout>
-        <div className="mx-auto max-w-4xl">
+        <div className="mx-auto max-w-7xl">
           <div className="card p-8 text-center">
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-error-subtle text-error">
               <AlertIcon className="h-7 w-7" />
@@ -222,60 +273,68 @@ export function ShiftReport() {
   }
 
   const { report, fields, summary, needsReviewCount } = detail;
-  const tone = varianceTone(summary.variance);
-  const styles = TONE_STYLES[tone];
   const isParsing = report.status === 'PENDING';
   const isFailed = report.status === 'FAILED';
   const isComplete = !isParsing && !isFailed && needsReviewCount === 0;
 
-  const grouped = GROUP_ORDER.map((group) => ({
-    group,
-    fields: fields.filter((field) => field.group === group),
-  })).filter((section) => section.fields.length > 0);
+  const session: CorrectionSession = {
+    mayCorrect,
+    editingFieldId,
+    savingFieldId,
+    start: setEditingFieldId,
+    cancel: () => setEditingFieldId(null),
+    save: handleCorrect,
+  };
 
-  return (
-    <Layout>
-      <div className="mx-auto max-w-4xl space-y-6">
-        <div className="flex items-center justify-between gap-4">
-          <nav className="flex min-w-0 items-center gap-2 text-sm text-muted">
-            <Link to="/" className="transition-colors hover:text-body">
-              Dashboard
-            </Link>
-            <ChevronRightIcon className="h-4 w-4" />
-            <span className="truncate">{formatReportDate(report.reportDate)}</span>
-          </nav>
-          <Link to="/shift-reports/recent" className="btn-secondary shrink-0">
+  const hasCredit = fields.some((field) => field.fieldName.startsWith('credit_sale:'));
+  const hasAttendants = fields.some((field) => field.fieldName.startsWith('attendant:'));
+  const hasTanks = fields.some((field) => field.fieldName.startsWith('tank:'));
+
+  const firstFlagged = fields.find((field) => field.needsReview) ?? null;
+  const target = firstFlagged ? CARD_FOR_GROUP[firstFlagged.group] : null;
+  const isPlotted = trend?.some((point) => point.reportId === report.id) ?? false;
+
+  const heading = (
+    <PageHeading
+      title="Shift report review"
+      description={`${formatReportDateLong(report.reportDate)}. Check this shift's sales, payments and stock against the report.`}
+      actions={
+        <>
+          <Link to="/shift-reports/recent" className="btn-secondary">
             <ReportsIcon className="h-4 w-4" />
             All reports
           </Link>
-        </div>
-
-        {/* Header */}
-        <div className="card p-6 sm:p-8">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <h1 className="text-2xl font-bold text-body">
-                {formatReportDate(report.reportDate)}
-              </h1>
-              <p className="mt-1 text-sm text-muted">
-                {report.stationName ?? 'Station'}
-                {report.pdfFileName ? ` · ${report.pdfFileName}` : ''}
-              </p>
-            </div>
-            <StatusBadge status={report.status} needsReviewCount={needsReviewCount} />
-          </div>
-
           {report.pdfFileUrl && (
             <a
               href={`/api/shift-reports/${report.id}/file`}
               target="_blank"
               rel="noreferrer"
-              className="btn-secondary mt-5"
+              className="btn-secondary"
             >
               <FileIcon className="h-4 w-4" />
-              Open the original PDF
+              Original PDF
             </a>
           )}
+        </>
+      }
+    />
+  );
+
+  return (
+    <Layout>
+      <div className="mx-auto max-w-7xl space-y-6">
+        {heading}
+
+        {/* Where the report came from, what it was called, and where it has got to. The file
+            name is here rather than buried because it is how a manager recognises the upload
+            they are looking at. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <MetaChip icon={BuildingIcon}>{report.stationName ?? 'Station'}</MetaChip>
+          <MetaChip icon={ClockIcon} title={report.uploadedAt}>
+            Uploaded {formatRelativeTime(report.uploadedAt)}
+          </MetaChip>
+          {report.pdfFileName && <MetaChip icon={FileIcon}>{report.pdfFileName}</MetaChip>}
+          <StatusChip status={report.status} needsReviewCount={needsReviewCount} />
         </div>
 
         {saveError && (
@@ -326,290 +385,146 @@ export function ShiftReport() {
           </div>
         )}
 
-        {/* The headline: is something wrong, and by how much. */}
         {!isParsing && !isFailed && (
-          <div className={`card border p-6 sm:p-8 ${styles.panel}`}>
-            <p className={`text-xs font-bold uppercase tracking-wider ${styles.label}`}>
-              Variance
-            </p>
-            <p className={`mt-2 font-mono text-4xl font-bold tabular-nums sm:text-5xl ${styles.text}`}>
-              {formatSignedTZS(summary.variance)}
-            </p>
-            <p className={`mt-2 text-sm font-semibold ${styles.label}`}>{styles.headline}</p>
-            {summary.provisional && (
-              <p className="mt-1 text-xs text-muted">
-                Provisional — this figure will move once the highlighted fields below are corrected.
-              </p>
+          <>
+            {needsReviewCount > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-warning-subtle p-4">
+                <div className="flex items-center gap-3">
+                  <AlertIcon className="h-5 w-5 shrink-0 text-warning" />
+                  <p className="text-sm font-semibold text-warning">
+                    {needsReviewCount} figure{needsReviewCount === 1 ? '' : 's'} need
+                    {needsReviewCount === 1 ? 's' : ''} your review before this shift is settled.
+                  </p>
+                </div>
+                {target && (
+                  <a
+                    href={`#${target.id}`}
+                    className="inline-flex items-center gap-1 text-sm font-semibold text-warning underline decoration-warning/40 underline-offset-2 hover:decoration-warning"
+                  >
+                    Start with {target.label}
+                    <ChevronRightIcon className="h-4 w-4" />
+                  </a>
+                )}
+              </div>
             )}
 
-            <dl className="mt-6 grid grid-cols-1 gap-x-6 gap-y-3 border-t border-black/5 pt-5 sm:grid-cols-2">
-              <SummaryRow label="Pump totalizer sales" value={formatTZS(summary.pumpTotalizerSales)} />
-              <SummaryRow label="Cash collected" value={formatTZS(summary.cash)} />
-              <SummaryRow label="Mobile money" value={formatTZS(summary.mobileMoney)} />
-              <SummaryRow label="Approved credit" value={formatTZS(summary.approvedCredit)} />
-            </dl>
-          </div>
-        )}
+            {isComplete && (
+              <div className="flex items-center gap-3 rounded-xl bg-success-subtle p-4">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-success text-white">
+                  <CheckIcon className="h-4 w-4" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-success">Every figure has been checked</p>
+                  <p className="text-xs text-success/80">
+                    Nothing here is waiting on you. The variance above is the figure to act on.
+                  </p>
+                </div>
+              </div>
+            )}
 
-        {isComplete && (
-          <div className="flex items-center gap-3 rounded-xl bg-success-subtle p-4">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-success text-white">
-              <CheckIcon className="h-4 w-4" />
+            <div className="grid gap-6 xl:grid-cols-2">
+              <VarianceHero summary={summary} />
+
+              <section className="card flex flex-col p-5" aria-labelledby="trend-heading">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-subtle text-primary">
+                    <ChartIcon className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 id="trend-heading" className="text-base font-bold text-body">
+                      Variance trend
+                    </h2>
+                    <p className="mt-0.5 text-xs text-muted">
+                      This station’s reconciled shifts over the last {TREND_DAYS} days, oldest
+                      first.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex-1">
+                  {trend === null ? (
+                    <div className="flex h-full min-h-[12rem] items-center justify-center">
+                      <span
+                        role="status"
+                        className="flex items-center gap-2 text-sm text-muted"
+                      >
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                        Loading recent shifts…
+                      </span>
+                    </div>
+                  ) : trend.length === 0 ? (
+                    <div className="flex h-full min-h-[12rem] flex-col items-center justify-center text-center">
+                      <p className="text-sm font-semibold text-body">
+                        {trendFailed ? 'The trend could not be loaded' : 'No other shifts to compare'}
+                      </p>
+                      <p className="mx-auto mt-1 max-w-xs text-xs text-muted">
+                        {trendFailed
+                          ? 'The figures for this shift are unaffected — only the comparison is missing.'
+                          : `This station has no reconciled shift dated in the last ${TREND_DAYS} days.`}
+                      </p>
+                    </div>
+                  ) : (
+                    <VarianceTrendChart points={trend} compact highlightId={report.id} />
+                  )}
+                </div>
+
+                {/* Said plainly rather than left as an unexplained absence of the ring: a
+                    reader who expects to find this shift on the chart needs to know why it
+                    is not there. */}
+                {trend !== null && trend.length > 0 && !isPlotted && (
+                  <p className="mt-3 text-xs text-muted">
+                    This shift is not plotted — it is either dated outside the last {TREND_DAYS}{' '}
+                    days or its variance could not be worked out.
+                  </p>
+                )}
+              </section>
             </div>
-            <div>
-              <p className="text-sm font-semibold text-success">Reconciliation Complete</p>
-              <p className="text-xs text-success/80">
-                Every figure has been read or checked. Nothing here is waiting on you.
+
+            {/* Two by two rather than four across: each of these is a small table with a
+                correction control on most of its rows, and at a quarter of the screen width
+                the figures wrap and the pencil lands somewhere unpredictable. */}
+            <div className="grid gap-6 md:grid-cols-2">
+              <div id="card-cash" className="scroll-mt-6">
+                <CashPaymentsCard fields={fields} session={session} />
+              </div>
+              {hasCredit && (
+                <div id="card-credit" className="scroll-mt-6">
+                  <CreditSalesCard fields={fields} session={session} />
+                </div>
+              )}
+              {hasAttendants && (
+                <div id="card-attendants" className="scroll-mt-6">
+                  <AttendantCard fields={fields} session={session} />
+                </div>
+              )}
+              {hasTanks && (
+                <div id="card-tanks" className="scroll-mt-6">
+                  <TankReadingsCard fields={fields} session={session} />
+                </div>
+              )}
+            </div>
+
+            {fields.length === 0 && (
+              <div className="card p-8 text-center">
+                <p className="text-sm text-muted">
+                  No figures were read from this report. Check the PDF and try reading it again.
+                </p>
+              </div>
+            )}
+
+            {fields.length > 0 && (!hasCredit || !hasAttendants || !hasTanks) && (
+              <p className="flex items-start gap-2 text-xs text-muted">
+                <InfoIcon className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  Only the sections this report contains are shown. A shift with no credit sales,
+                  no attendants or no tank dip on the page it was printed from has nothing to
+                  reconcile in that card.
+                </span>
               </p>
-            </div>
-          </div>
-        )}
-
-        {needsReviewCount > 0 && !isParsing && !isFailed && (
-          <div className="flex items-center justify-between gap-3 rounded-xl bg-warning-subtle p-4">
-            <div className="flex items-center gap-3">
-              <AlertIcon className="h-5 w-5 shrink-0 text-warning" />
-              <p className="text-sm font-semibold text-warning">
-                {needsReviewCount} field{needsReviewCount === 1 ? '' : 's'} need
-                {needsReviewCount === 1 ? 's' : ''} your review
-              </p>
-            </div>
-          </div>
-        )}
-
-        {grouped.map((section) => (
-          <FieldGroup
-            key={section.group}
-            title={GROUP_LABELS[section.group]}
-            fields={section.fields}
-            mayCorrect={mayCorrect}
-            editingFieldId={editingFieldId}
-            savingFieldId={savingFieldId}
-            onStartEdit={setEditingFieldId}
-            onCancelEdit={() => setEditingFieldId(null)}
-            onSave={handleCorrect}
-          />
-        ))}
-
-        {!isParsing && !isFailed && fields.length === 0 && (
-          <div className="card p-8 text-center">
-            <p className="text-sm text-muted">
-              No figures were read from this report. Check the PDF and try reading it again.
-            </p>
-          </div>
+            )}
+          </>
         )}
       </div>
     </Layout>
-  );
-}
-
-function SummaryRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4">
-      <dt className="text-sm text-muted">{label}</dt>
-      <dd className="font-mono text-sm font-semibold tabular-nums text-body">{value}</dd>
-    </div>
-  );
-}
-
-function StatusBadge({ status, needsReviewCount }: { status: string; needsReviewCount: number }) {
-  if (status === 'PENDING') {
-    return <span className="badge bg-primary-subtle text-primary">Reading…</span>;
-  }
-  if (status === 'FAILED') {
-    return <span className="badge bg-error-subtle text-error">Could not be read</span>;
-  }
-  if (needsReviewCount > 0) {
-    return (
-      <span className="badge bg-warning-subtle text-warning">
-        {needsReviewCount} to review
-      </span>
-    );
-  }
-  return <span className="badge bg-success-subtle text-success">Reconciled</span>;
-}
-
-interface FieldGroupProps {
-  title: string;
-  fields: ExtractedField[];
-  mayCorrect: boolean;
-  editingFieldId: string | null;
-  savingFieldId: string | null;
-  onStartEdit: (fieldId: string) => void;
-  onCancelEdit: () => void;
-  onSave: (fieldId: string, value: string) => Promise<void>;
-}
-
-function FieldGroup({
-  title,
-  fields,
-  mayCorrect,
-  editingFieldId,
-  savingFieldId,
-  onStartEdit,
-  onCancelEdit,
-  onSave,
-}: FieldGroupProps) {
-  let lastHeading: string | null = null;
-
-  return (
-    <div className="card overflow-hidden">
-      <div className="flex items-center justify-between border-b border-border px-6 py-4">
-        <h2 className="text-base font-bold text-body">{title}</h2>
-        <span className="text-xs text-muted">
-          {fields.length} field{fields.length === 1 ? '' : 's'}
-        </span>
-      </div>
-      <div className="divide-y divide-border">
-        {fields.map((field) => {
-          const heading = groupHeading(field);
-          const showHeading = heading !== null && heading !== lastHeading;
-          lastHeading = heading ?? lastHeading;
-
-          return (
-            <div key={field.id}>
-              {showHeading && (
-                <p className="bg-slate-50 px-6 py-2 text-xs font-bold uppercase tracking-wider text-muted">
-                  {heading}
-                </p>
-              )}
-              <FieldRow
-                field={field}
-                mayCorrect={mayCorrect}
-                isEditing={editingFieldId === field.id}
-                isSaving={savingFieldId === field.id}
-                onStartEdit={onStartEdit}
-                onCancelEdit={onCancelEdit}
-                onSave={onSave}
-              />
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-interface FieldRowProps {
-  field: ExtractedField;
-  mayCorrect: boolean;
-  isEditing: boolean;
-  isSaving: boolean;
-  onStartEdit: (fieldId: string) => void;
-  onCancelEdit: () => void;
-  onSave: (fieldId: string, value: string) => Promise<void>;
-}
-
-function FieldRow({
-  field,
-  mayCorrect,
-  isEditing,
-  isSaving,
-  onStartEdit,
-  onCancelEdit,
-  onSave,
-}: FieldRowProps) {
-  const [draft, setDraft] = useState(field.parsedValue ?? '');
-
-  useEffect(() => {
-    setDraft(field.parsedValue ?? '');
-  }, [field.parsedValue, isEditing]);
-
-  const flag = field.needsReview;
-
-  return (
-    <div
-      className={`px-6 py-4 transition-colors ${
-        // A tinted row, not a small icon: on a phone in daylight a badge alone is easy to
-        // miss, and this row is the thing the manager has to act on.
-        flag ? 'bg-warning-subtle/70' : ''
-      }`}
-    >
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-body">{field.label}</p>
-          {flag && (
-            <p className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-warning px-2.5 py-0.5 text-xs font-bold text-white">
-              <AlertIcon className="h-3 w-3" />
-              Needs your review
-            </p>
-          )}
-          {flag && field.reviewNote && (
-            <p className="mt-1.5 text-xs text-warning">{field.reviewNote}</p>
-          )}
-          {field.correctedAt && !flag && (
-            <p className="mt-1 text-xs text-muted">Corrected by you</p>
-          )}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-3">
-          {isEditing ? (
-            <form
-              className="flex items-center gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void onSave(field.id, draft);
-              }}
-            >
-              <input
-                autoFocus
-                className="input w-40 py-2 text-right font-mono tabular-nums"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') {
-                    event.preventDefault();
-                    onCancelEdit();
-                  }
-                }}
-                inputMode="decimal"
-                aria-label={`Corrected value for ${field.label}`}
-              />
-              <button
-                type="submit"
-                className="btn-primary px-3 py-2"
-                disabled={isSaving || draft.trim().length === 0}
-              >
-                {isSaving ? 'Saving…' : 'Save'}
-              </button>
-              <button type="button" className="btn-ghost px-2 py-2" onClick={onCancelEdit} aria-label="Cancel">
-                <CloseIcon className="h-4 w-4" />
-              </button>
-            </form>
-          ) : (
-            <>
-              <span
-                className={`font-mono text-base font-semibold tabular-nums ${
-                  flag ? 'text-warning' : 'text-body'
-                }`}
-              >
-                {field.amount !== null ? formatTZS(field.amount) : field.parsedValue ?? '—'}
-              </span>
-              {mayCorrect && (
-                <button
-                  type="button"
-                  className="btn-ghost px-3 py-1.5 text-xs"
-                  onClick={() => onStartEdit(field.id)}
-                >
-                  Correct
-                </button>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* What the parser actually saw. Shown whenever a human needs to judge the figure. */}
-      {flag && field.regionText && (
-        <details className="mt-3">
-          <summary className="cursor-pointer text-xs font-semibold text-muted hover:text-body">
-            Show what was read from the PDF
-          </summary>
-          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded-lg bg-slate-900 p-3 font-mono text-xs leading-relaxed text-slate-200">
-            {field.regionText}
-          </pre>
-        </details>
-      )}
-    </div>
   );
 }

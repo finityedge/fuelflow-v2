@@ -7,14 +7,32 @@ import {
   type VarianceTone,
 } from '../lib/variance.js';
 
-const WIDTH = 760;
-const HEIGHT = 260;
-const PAD = { top: 18, right: 18, bottom: 38, left: 68 };
-const PLOT_W = WIDTH - PAD.left - PAD.right;
-const PLOT_H = HEIGHT - PAD.top - PAD.bottom;
+interface Geometry {
+  width: number;
+  height: number;
+  pad: { top: number; right: number; bottom: number; left: number };
+  maxXLabels: number;
+}
 
-/** At most this many date labels, however many shifts are plotted. */
-const MAX_X_LABELS = 7;
+/**
+ * The chart is a fixed viewBox scaled to its container, so every label shrinks with it: a
+ * 590px column renders an 11px tick at 8.5px, which is below what anyone reads. The smaller
+ * canvas makes the text *bigger* on screen, because the same font size in a narrower viewBox
+ * scales up rather than down.
+ */
+const FULL: Geometry = {
+  width: 760,
+  height: 260,
+  pad: { top: 18, right: 18, bottom: 38, left: 68 },
+  maxXLabels: 7,
+};
+
+const COMPACT: Geometry = {
+  width: 520,
+  height: 210,
+  pad: { top: 16, right: 14, bottom: 34, left: 58 },
+  maxXLabels: 4,
+};
 
 /**
  * A round number near `raw`, for gridlines a person can read.
@@ -32,7 +50,23 @@ function niceStep(raw: number): number {
   return nice * exponent;
 }
 
-export function VarianceTrendChart({ points }: { points: DashboardTrendPoint[] }) {
+export function VarianceTrendChart({
+  points,
+  compact = false,
+  highlightId,
+}: {
+  points: DashboardTrendPoint[];
+  /** Draws on a smaller canvas so the labels stay legible in a narrow column. */
+  compact?: boolean;
+  /** The shift being reviewed, ringed so it can be found among its neighbours. */
+  highlightId?: string;
+}) {
+  const { width: WIDTH, height: HEIGHT, pad: PAD, maxXLabels: MAX_X_LABELS } = compact
+    ? COMPACT
+    : FULL;
+  const PLOT_W = WIDTH - PAD.left - PAD.right;
+  const PLOT_H = HEIGHT - PAD.top - PAD.bottom;
+
   const values = points.map((point) => point.variance);
   const rawLo = Math.min(0, ...values);
   const rawHi = Math.max(0, ...values);
@@ -126,8 +160,22 @@ export function VarianceTrendChart({ points }: { points: DashboardTrendPoint[] }
           const tone: VarianceTone = varianceTone(point.variance);
           const cx = x(index);
           const cy = y(point.variance);
+          const isHighlighted = highlightId !== undefined && point.reportId === highlightId;
           return (
             <g key={point.reportId}>
+              {/* A ring, not a bigger dot: the colour and the fill both already mean
+                  something, so the point being reviewed is marked with a shape that does not. */}
+              {isHighlighted && (
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={10}
+                  fill="none"
+                  stroke="rgb(var(--color-primary))"
+                  strokeWidth={1.5}
+                  strokeDasharray="3 3"
+                />
+              )}
               <circle
                 cx={cx}
                 cy={cy}
@@ -139,6 +187,7 @@ export function VarianceTrendChart({ points }: { points: DashboardTrendPoint[] }
                 <title>
                   {`${formatShortDate(point.date)} — ${formatSignedTZS(point.variance)}. ${VARIANCE_LABEL[tone]}.`}
                   {point.provisional ? ' A figure is still flagged, so this may change.' : ''}
+                  {isHighlighted ? ' This is the shift you are reviewing.' : ''}
                 </title>
               </circle>
 
