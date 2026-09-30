@@ -1,5 +1,5 @@
 import { useState, FormEvent } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { login } from '../lib/auth.js';
 import { useAuthStore, selectIsAuthenticated } from '../stores/authStore.js';
 import { MailIcon } from '../components/icons.js';
@@ -21,7 +21,6 @@ export function Login() {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [resetNoteOpen, setResetNoteOpen] = useState(false);
 
   if (isHydrated && isAuthenticated) {
     return <Navigate to="/" replace />;
@@ -78,22 +77,16 @@ export function Login() {
             onChange={(e) => setPassword(e.target.value)}
           />
           <div className="mt-2 text-right">
-            <button
-              type="button"
-              onClick={() => setResetNoteOpen((open) => !open)}
-              aria-expanded={resetNoteOpen}
+            {/* A real link now, and it was a button before this: the reset flow did not exist,
+                so the honest thing was a disclosure that said so. It does exist, so the honest
+                thing is a link that goes there. */}
+            <Link
+              to="/forgot-password"
               className="rounded text-sm text-muted transition-colors hover:text-body focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
             >
               Forgot password?
-            </button>
+            </Link>
           </div>
-          {resetNoteOpen && (
-            // The design has this link; the product has no reset flow behind it. Saying so is
-            // the point — a link that quietly does nothing reads as a broken app.
-            <p className="mt-2 text-xs leading-relaxed text-muted">
-              Password reset isn&rsquo;t available in this version of FuelFlow.
-            </p>
-          )}
         </div>
 
         <div className="pt-1">

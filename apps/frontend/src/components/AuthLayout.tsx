@@ -288,6 +288,61 @@ export function AuthError({ message }: { message: string }) {
   );
 }
 
+/**
+ * A standing state on an auth screen: a thing that happened, rather than a thing that went wrong.
+ *
+ * Both password-reset screens end in one of these instead of in a form — one where the request
+ * was accepted, one where the password was changed — and both need the same explanation under
+ * them about what to do next. `role="status"` rather than `role="alert"`: an alert interrupts,
+ * and neither of these is bad news. The success tone is the one exception to that, and it is
+ * announced too, because the screen it replaces was a form somebody was mid-way through.
+ */
+export function AuthPanel({
+  tone,
+  icon: Icon,
+  title,
+  children,
+}: {
+  tone: 'info' | 'success';
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
+  title: string;
+  children: ReactNode;
+}) {
+  const palette =
+    tone === 'success'
+      ? { box: 'border-success/30 bg-success-subtle', icon: 'text-success' }
+      : { box: 'border-primary/30 bg-primary-subtle', icon: 'text-primary' };
+
+  return (
+    <div role="status" className={`mt-8 rounded-xl border p-5 ${palette.box}`}>
+      <div className="flex items-start gap-3">
+        <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${palette.icon}`} aria-hidden="true" />
+        <div>
+          <p className="text-sm font-semibold text-body">{title}</p>
+          <div className="mt-1.5 space-y-2 text-sm leading-relaxed text-muted">{children}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The quiet secondary line under a form: "Back to sign in", "Request a new link".
+ *
+ * A plain `Link` rather than a button, because it is navigation and not an action — the browser's
+ * own back button works, the middle-click works, and the URL is copyable.
+ */
+export function AuthTextLink({ to, children }: { to: string; children: ReactNode }) {
+  return (
+    <Link
+      to={to}
+      className="rounded text-sm font-medium text-primary transition-colors hover:text-primary-dark focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+    >
+      {children}
+    </Link>
+  );
+}
+
 export function AuthDivider({ label = 'or' }: { label?: string }) {
   return (
     <div className="flex items-center gap-4">

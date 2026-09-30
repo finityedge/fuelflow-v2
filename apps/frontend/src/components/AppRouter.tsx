@@ -3,6 +3,8 @@ import { Home } from '../pages/Home.js';
 import { MyShifts } from '../pages/MyShifts.js';
 import { Login } from '../pages/Login.js';
 import { Register } from '../pages/Register.js';
+import { ForgotPassword } from '../pages/ForgotPassword.js';
+import { ResetPassword } from '../pages/ResetPassword.js';
 import { Queue } from '../pages/Queue.js';
 import { Upload } from '../pages/Upload.js';
 import { ShiftReport } from '../pages/ShiftReport.js';
@@ -129,6 +131,12 @@ export function AppRouter() {
         />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        {/* Public, and they have to be. These two screens exist for people who cannot sign in,
+            so putting them behind `ProtectedRoute` would leave the one flow they serve
+            unreachable — and a redirect to `/login` from `/forgot-password` is not a small
+            version of the same thing, it is a loop. */}
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
       </Routes>
     </BrowserRouter>
   );

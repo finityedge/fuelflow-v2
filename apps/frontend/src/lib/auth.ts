@@ -1,5 +1,5 @@
 import { useAuthStore } from '../stores/authStore.js';
-import { apiClient, API_BASE } from './api.js';
+import { apiClient, API_BASE, readError } from './api.js';
 import type { AuthResponse } from '../types/auth.js';
 
 interface RegisterPayload {
@@ -66,5 +66,51 @@ export async function logout(): Promise<void> {
   } finally {
     useAuthStore.getState().clearAuth();
     window.location.href = '/login';
+  }
+}
+
+/**
+ * Ask for a reset link.
+ *
+ * Deliberately a bare `fetch` rather than `apiClient`, for a reason that is about this flow
+ * specifically: `apiClient` retries a 401 after refreshing the access token, and a person
+ * resetting a forgotten password has no session to refresh. Worse, the refresh failing calls
+ * `clearAuthAndRedirect`, which would bounce them to `/login` in the middle of the one screen
+ * that exists for people who cannot get past `/login`.
+ *
+ * Returns nothing, because the server says nothing. The endpoint answers identically for an
+ * address with an account and one without, and a client that invented a difference — "we sent
+ * it" versus "no such user" — would undo the whole point of that.
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/auth/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+
+  if (!res.ok) {
+    // The one refusal that is a property of the server rather than of the address: a deployment
+    // with no working mail transport answers 503 rather than pretending.
+    throw await readError(res, 'That request could not be sent.');
+  }
+}
+
+/**
+ * Spend a reset link and set a new password.
+ *
+ * No session comes back, and none is created locally: the caller has proved they hold the
+ * account by producing the emailed link, which is not the same as having signed in. They go to
+ * `/login` afterwards, the same way they would on any other device.
+ */
+export async function resetPassword(token: string, password: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password }),
+  });
+
+  if (!res.ok) {
+    throw await readError(res, 'That password could not be set.');
   }
 }
