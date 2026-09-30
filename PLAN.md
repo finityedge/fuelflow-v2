@@ -53,7 +53,7 @@ they come before any feature work.
 | Password hashing (argon2id, not a stub) | **DONE** | `services/password.service.ts:4` (`argon2.hash`, m=65536, t=3, p=4); login verifies with `argon2.verify` via `services/auth.service.ts:87`. |
 | JWT verification on protected routes | **DONE** | `middleware/auth.ts:42` verifies the access token and loads `req.user`; `app.ts:41` installs it globally as an `onRequest` hook, with per-route opt-out via `config.public` (`health.ts:5`, all of `routes/auth.ts`). Every route file was checked — no route was added without the guard. |
 | Tenant scoping (centralised, not ad-hoc) | **DONE** | Prisma client extension + `AsyncLocalStorage`: `prisma/client.ts:4,77-195,197`; every handler wrapped in the tenant scope by `app.ts:44-54`; the BullMQ worker opens the scope explicitly (`jobs/processors/pdfProcessor.ts:16`). No route was found where scoping is missing. **Caveats:** `StationAssignment` and `Tenant` are not in `TENANT_SCOPED_MODELS` (`client.ts:4`) — both are only ever reached via a scoped parent or by `userId`, so this is acceptable today, but a new direct query on `StationAssignment` would be unscoped. The mechanism is also a silent no-op when no context is active, so any DB call from a `preHandler`/hook (none today) would run unscoped. |
-| RBAC enforcement | **DONE** | `requireRole` (`middleware/rbac.ts:5`) is applied to upload (`shiftReports.ts:90`), field correction (`:182`), bulk accept (`:227`) and reparse (`:262`); station access is enforced inline via `hasStationAccess` (`:97,121,149,167,202,243,276`; `dashboard.ts:13`; `stations.ts:17`). Read routes carry no role gate by design (an ATTENDANT may read their own stations) — with **two deliberate exceptions: `GET /api/attendants/profiles` and `GET /api/findings`**, both OWNER/MANAGER only. The first returns money attributed to named people and the list is every colleague's (`routes/attendantProfiles.ts`); the second is the one read built to be printed and handed over (`routes/findings.ts`). The write side is gated too: `routes/users.ts` reserves provisioning for an owner and the roster for OWNER/MANAGER, and `routes/stations.ts` splits a station's identity (owner) from its contents (OWNER/MANAGER plus `requireStationAccess`). `0.1` landed after this row was first written — the refusals are pinned in `tests/protected.test.ts`, `tests/rbac.test.ts`, `tests/users.test.ts` and `tests/stations.test.ts`. |
+| RBAC enforcement | **DONE** | `requireRole` (`middleware/rbac.ts:5`) is applied to upload (`shiftReports.ts:114`), field correction (`:216`), bulk accept (`:261`) and reparse (`:296`); station access is enforced inline via `hasStationAccess` (`:121,145,176,198,234,275,308`; `dashboard.ts:13`; `stations.ts:17`). Read routes carry no role gate by design (an ATTENDANT may read their own stations) — with **four deliberate exceptions, all OWNER/MANAGER only**: `GET /api/attendants/profiles`, `GET /api/findings`, and `GET /api/shift-reports/:id` with its `/file` (`shiftReports.ts:163,186`). The criterion is the same one in each case — whether the payload attributes money to a named person. The first returns money attributed to named people and the list is every colleague's (`routes/attendantProfiles.ts`); the second is the one read built to be printed and handed over (`routes/findings.ts`); the third carries every colleague's attendant row and the uploaded PDF with the same rows printed on it (`canReadReport`, `shiftReports.ts`), which the first of the four refuses on the stated ground that the list is every colleague's — the same figures refused by one route and served by another was an oversight, not a policy, and it is now the same answer in both places. `GET /api/shift-reports` (the list) and `GET /api/dashboard` stay open: they carry the shift's totals and name nobody. The write side is gated too: `routes/users.ts` reserves provisioning for an owner and the roster for OWNER/MANAGER, and `routes/stations.ts` splits a station's identity (owner) from its contents (OWNER/MANAGER plus `requireStationAccess`). `0.1` landed after this row was first written — the refusals are pinned in `tests/protected.test.ts`, `tests/rbac.test.ts`, `tests/users.test.ts` and `tests/stations.test.ts`. |
 | Seed produces Tenant + OWNER + Station | **DONE** | `prisma/seed.ts` creates tenant `demo-tenant`, station `demo-station` with a 5,000 variance threshold, `owner@fuelflow.local` and `manager@fuelflow.local` (both password `password`), the manager→station assignment, the station's three tanks, and the two attendants the sample reports name (see "Fixed in passing"). Exceeds the ask. It also seeds one ATTENDANT login — `attendant@fuelflow.local`, assigned to the demo station and linked to `John Mwaka` — because the attendant-facing screen cannot be seen at all without one; the other attendant has no login, which is the ordinary state for the role. Upserts use `update: {}` for everything but the threshold, so a changed seed password never rotates, and the attendant link is claimed only when unset. |
 | Frontend auth store / token attach / route guard | **DONE** | Zustand+persist store (`stores/authStore.ts`); `lib/api.ts:63` attaches the Bearer token and retries once on 401 with refresh, redirecting to `/login` on failure (`:17-22,70-79`); `components/ProtectedRoute.tsx` redirects unauthenticated users and gates roles; `AppRouter.tsx` protects `/`, `/upload`, `/shift-reports/recent`, `/shift-reports/:id`, `/review`, `/tanks`, `/attendants`, `/findings` and `/settings`. `/` is dispatched by role (`HomeRoute`): an ATTENDANT gets their own record, everybody else the dashboard. `/forgot-password` and `/reset-password` are deliberately **not** behind the guard: they exist for people who cannot sign in, so a redirect to `/login` from either would be a loop rather than a gate. |
 
@@ -374,13 +374,33 @@ station and linked to **John Mwaka** — one of the two names the sample reports
 signing in as that login lands on figures rather than on the empty state. It claims the link only
 when it is unset, so re-seeding never undoes a link somebody changed by hand.
 
-**One thing left open, honestly.** Reads are station-scoped by design — that is what
-`hasStationAccess` means everywhere — so an attendant assigned to a station can still reach
-`GET /shift-reports`, `GET /shift-reports/:id` and `GET /dashboard?stationId=…` by URL and see
-the station's collective figures. That is not what this screen withholds; it predates it and it is
-a product decision about what an attendant login is *for* (a personal record, or a station user),
-not a side effect of adding a page. It is recorded here rather than quietly ignored, and closing
-it would mean deciding that question.
+**The bypass this screen implied, now closed.** This paragraph used to say that an attendant
+assigned to a station "can still reach `GET /shift-reports`, `GET /shift-reports/:id` and
+`GET /dashboard?stationId=…` by URL and see the station's collective figures", and treated that as
+a product decision to be made later. The premise was wrong for one of the three. A report's
+**detail** is not the station's collective figures: it carries every colleague's attendant row —
+the money each of them was due and handed over — and `getAttendantProfiles` derives its numbers
+from exactly those rows. So `/attendants/profiles` refused an attendant a 403 on the stated ground
+that "the list is every colleague's", while `GET /shift-reports/:id` served the same figures to the
+same caller, and the refusal was decorative. An attendant posted to the station *and* refused was
+the test case, and it is now pinned. `GET /shift-reports/:id` and `GET /shift-reports/:id/file`
+(the uploaded PDF, where the same rows are printed) take the role gate every write already had
+(`canReadReport`, `routes/shiftReports.ts`); the findings sheet had reached the same conclusion
+about the same figures — "an attendant being assigned to the station is not consent to be given a
+document about the people working beside them". The two frontend routes went with them, because a
+list whose every row opens a door that is locked is not a screen to show anybody, and the sidebar
+already gives that role one row. Tests: `tests/shiftReports.routes.test.ts` ("GET
+/api/shift-reports/:id and the uploaded file", 7 — the manager's 200 that shows the colleague row
+first, then the refusals).
+
+**Still genuinely open, and unchanged by that fix:** `GET /shift-reports` (the list) and
+`GET /dashboard?stationId=…` remain readable by an attendant. Both carry only the shift's own
+totals and name nobody, and an attendant's screen already shows them their share of that same
+arithmetic, so hiding it would withhold the denominator rather than a secret. But whether an
+attendant login is a personal record or a station user is a question this plan has not answered,
+and it is now answered in exactly one place instead of two — the boundary is pinned by a test
+(`tests/shiftReports.routes.test.ts`, "still lets an attendant read the station's list of reports,
+which names nobody") so that moving it is a deliberate change rather than a drift.
 
 ---
 
@@ -403,9 +423,16 @@ it would mean deciding that question.
 11. ~~The unreadable attendant row, a flag nothing could clear~~ **DONE** — the parser writes the
     row as its two figures, empty and flagged, so the correction control fills them in. Written
     up under Module 1, open item (d), with the test files that cover it.
+12. ~~The shift-report detail, served to the people the profiling screen refuses~~ **DONE** — an
+    attendant was refused every colleague's figures by `GET /api/attendants/profiles` and handed
+    them by `GET /api/shift-reports/:id`. Found while re-reading the attendant screen's own
+    reasoning, not from a report. See the closing note under "ATTENDANT-facing screen".
 
 **P1 is complete.** Module 1's two remaining open items are blocked on inputs the repository does
 not have — a real Petronite sample, and an OCR engine — and not on work that can be sequenced here.
+One question is open rather than blocked, and it is recorded as such: whether an attendant may read
+the station's *collective* figures — the report list and the dashboard — which name nobody and
+which the station assignment already answers. See "ATTENDANT-facing screen".
 
 **P2 — go-to-market & remaining UI**
 10. ~~Free-audit findings sheet export~~ **DONE**
@@ -418,5 +445,9 @@ Module 1's parser coverage is blocked on a real Petronite sample, and the deploy
 `0.7` — an actual `SMTP_URL` and a public `APP_URL` — is an operational decision rather than
 code. Until those are set, password reset answers 503 in production by design.
 
-**No known defect is open.** The last one — an unreadable attendant row, a flag the review screen
-had no control for, which left a report in NEEDS_REVIEW for good — is fixed (P1 item 11).
+**No known defect is open.** The last two were both flags the product had written and then left
+without a way to act on. An unreadable attendant row was a review flag with no control that could
+clear it, so a report carrying one sat in NEEDS_REVIEW for good (P1 item 11). And an attendant was
+refused every colleague's figures by `/attendants/profiles` while `GET /shift-reports/:id` served
+them the same figures — a refusal that a second route made decorative (P1 item 12). Both are fixed
+and both are pinned by tests.

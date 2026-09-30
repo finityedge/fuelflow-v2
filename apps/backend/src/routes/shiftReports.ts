@@ -22,6 +22,30 @@ import { readPdf } from '../config/storage.js';
 
 const canManage = requireRole([UserRole.OWNER, UserRole.MANAGER]);
 
+/**
+ * Who may open a shift report, rather than merely be posted to the station it belongs to.
+ *
+ * Being assigned to a station is what `hasStationAccess` answers, and for the list and the
+ * dashboard that is the right question — those return the station's own totals, which belong to
+ * the forecourt. A report's *detail* is a different document: it carries every colleague's
+ * attendant row, with the money each of them was due and handed over, and the profiling screen's
+ * numbers are derived from exactly those rows. Serving it to an attendant would hand them the
+ * per-person attribution that `GET /api/attendants/profiles` refuses with a 403 on the stated
+ * ground that the list is every colleague's — the same data refused by one route and returned by
+ * another is not a policy, it is an oversight. The findings sheet reaches the same conclusion
+ * about the same figures: an attendant being assigned to the station is not consent to be given
+ * a document about the people working beside them.
+ *
+ * The uploaded PDF is gated with it, because it is the same document in its original form: the
+ * attendant rows are printed on it.
+ *
+ * This is deliberately not applied to `GET /shift-reports` or `GET /dashboard`. Those carry the
+ * shift's totals — totalizer, cash, mobile money, credit, the variance between them — and name
+ * nobody; an attendant's own screen shows them their share of the same arithmetic, so hiding the
+ * station's version of it would withhold the denominator rather than a secret.
+ */
+const canReadReport = requireRole([UserRole.OWNER, UserRole.MANAGER]);
+
 function parseRouteId(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length > 0 && trimmed.length <= 100 ? trimmed : null;
@@ -134,50 +158,58 @@ export async function shiftReportRoutes(app: FastifyInstance) {
     return reply.send(page);
   });
 
-  app.get<{ Params: { id: string } }>('/shift-reports/:id', async (request, reply) => {
-    const user = requireRequestUser(request);
-    const id = parseRouteId(request.params.id);
-    if (!id) {
-      return reply.status(400).send({ error: 'Invalid report id' });
-    }
+  app.get<{ Params: { id: string } }>(
+    '/shift-reports/:id',
+    { preHandler: canReadReport },
+    async (request, reply) => {
+      const user = requireRequestUser(request);
+      const id = parseRouteId(request.params.id);
+      if (!id) {
+        return reply.status(400).send({ error: 'Invalid report id' });
+      }
 
-    const detail = await getShiftReportDetail(id);
-    if (!detail) {
-      return reply.status(404).send({ error: 'Shift report not found' });
-    }
+      const detail = await getShiftReportDetail(id);
+      if (!detail) {
+        return reply.status(404).send({ error: 'Shift report not found' });
+      }
 
-    if (!hasStationAccess(user, detail.report.stationId)) {
-      return reply.status(403).send({ error: 'Forbidden: station access denied' });
-    }
+      if (!hasStationAccess(user, detail.report.stationId)) {
+        return reply.status(403).send({ error: 'Forbidden: station access denied' });
+      }
 
-    return reply.send(detail);
-  });
+      return reply.send(detail);
+    }
+  );
 
-  app.get<{ Params: { id: string } }>('/shift-reports/:id/file', async (request, reply) => {
-    const user = requireRequestUser(request);
-    const id = parseRouteId(request.params.id);
-    if (!id) {
-      return reply.status(400).send({ error: 'Invalid report id' });
-    }
+  app.get<{ Params: { id: string } }>(
+    '/shift-reports/:id/file',
+    { preHandler: canReadReport },
+    async (request, reply) => {
+      const user = requireRequestUser(request);
+      const id = parseRouteId(request.params.id);
+      if (!id) {
+        return reply.status(400).send({ error: 'Invalid report id' });
+      }
 
-    const report = await prisma.shiftReport.findUnique({ where: { id } });
-    if (!report?.pdfFileUrl) {
-      return reply.status(404).send({ error: 'No uploaded file for this report' });
-    }
-    if (!hasStationAccess(user, report.stationId)) {
-      return reply.status(403).send({ error: 'Forbidden: station access denied' });
-    }
+      const report = await prisma.shiftReport.findUnique({ where: { id } });
+      if (!report?.pdfFileUrl) {
+        return reply.status(404).send({ error: 'No uploaded file for this report' });
+      }
+      if (!hasStationAccess(user, report.stationId)) {
+        return reply.status(403).send({ error: 'Forbidden: station access denied' });
+      }
 
-    try {
-      const data = await readPdf(report.pdfFileUrl);
-      return reply
-        .header('Content-Disposition', `inline; filename="${report.pdfFileName ?? 'shift-report.pdf'}"`)
-        .type('application/pdf')
-        .send(data);
-    } catch {
-      return reply.status(404).send({ error: 'The uploaded file is no longer available' });
+      try {
+        const data = await readPdf(report.pdfFileUrl);
+        return reply
+          .header('Content-Disposition', `inline; filename="${report.pdfFileName ?? 'shift-report.pdf'}"`)
+          .type('application/pdf')
+          .send(data);
+      } catch {
+        return reply.status(404).send({ error: 'The uploaded file is no longer available' });
+      }
     }
-  });
+  );
 
   app.patch<{ Params: { id: string; fieldId: string } }>(
     '/shift-reports/:id/fields/:fieldId',

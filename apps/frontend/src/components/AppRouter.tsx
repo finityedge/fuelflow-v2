@@ -58,10 +58,19 @@ export function AppRouter() {
         />
         {/* Declared before the :id route so "recent" is never read as a report id —
             Layout and Home both link here. */}
+        {/*
+          Both shift-report reads are a reviewer's surface, and both are gated here rather than
+          left to the API to refuse. The list is an index of reports and every row leads to a
+          detail an attendant may not open — showing a page whose only affordance is a locked door
+          is not a feature, and the sidebar already gives that role one row. The API still answers
+          the list for anybody who asks, because the answer it holds names nobody; this is about
+          which screens the product puts in front of whom, which is a different question from
+          which figures a caller may read.
+        */}
         <Route
           path="/shift-reports/recent"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute allowedRoles={['OWNER', 'MANAGER']}>
               <ShiftReports />
             </ProtectedRoute>
           }
@@ -124,7 +133,7 @@ export function AppRouter() {
         <Route
           path="/shift-reports/:id"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute allowedRoles={['OWNER', 'MANAGER']}>
               <ShiftReport />
             </ProtectedRoute>
           }
