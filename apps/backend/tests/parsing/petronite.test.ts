@@ -259,6 +259,97 @@ describe('parseShiftReportText - attendants with initials', () => {
   });
 });
 
+/**
+ * A row whose two figures could not be told apart, beside rows that read cleanly.
+ *
+ * The row is worth its own fixture because of what the parser does *not* do with it. It could
+ * write one row-level flag and leave the row for a human, which is what it used to do — but a
+ * flag with no control that can clear it is a report that never leaves NEEDS_REVIEW, and the
+ * manager has the paper in front of them and can read both figures off it. So the row is written
+ * as the two fields it should have, both empty, and the ordinary correction control fills them in.
+ *
+ * The nameless row at the end is here for a second reason: it is keyed by its position among the
+ * rows, and an unreadable row is two fields where a readable one is three, so the old
+ * `fields.length / 3` arithmetic gave this row a fractional key.
+ */
+const REPORT_UNREADABLE_ROW = `PETRONITE FUEL STATION
+SHIFT REPORT
+Date: 2026-03-16
+
+ATTENDANTS
+JOHN MWAKA ....... 3,200,000
+GRACE KIMARO ..... 5,920,000 5,970,000
+....... 1,800,000 1,700,000
+
+RECONCILIATION
+`;
+
+describe('parseShiftReportText - an unreadable attendant row', () => {
+  const result = parseShiftReportText(REPORT_UNREADABLE_ROW);
+
+  it('writes the row as its two figures, empty and flagged, so a person can fill them in', () => {
+    const expected = fieldOf(result.fields, 'attendant:JOHN_MWAKA:expected');
+    const collected = fieldOf(result.fields, 'attendant:JOHN_MWAKA:collected');
+
+    expect(expected).toBeDefined();
+    expect(collected).toBeDefined();
+    for (const field of [expected, collected]) {
+      expect(field?.amount).toBeNull();
+      expect(field?.parsedValue).toBeNull();
+      expect(field?.needsReview).toBe(true);
+      expect(field?.confidence).toBe('LOW');
+    }
+
+    // The label names the figure, which is what the correction form asks about.
+    expect(expected?.label).toBe('JOHN MWAKA - to collect');
+
+    // The shape it used to take, and the reason the flag could never be cleared: nothing on this
+    // screen can write two figures at once, and correcting one number is not the pair.
+    expect(fieldOf(result.fields, 'attendant:JOHN_MWAKA:row')).toBeUndefined();
+    expect(result.fields.filter((field) => field.fieldName.endsWith(':row'))).toEqual([]);
+  });
+
+  it('says what to do about it, in the manager’s words', () => {
+    const expected = fieldOf(result.fields, 'attendant:JOHN_MWAKA:expected');
+
+    // A flag with no instruction sends somebody looking for a bug. One figure *was* found here,
+    // and saying so is the difference between "this scan is unreadable" and "the second column
+    // is".
+    expect(expected?.reviewNote).toMatch(/type both figures in from the paper report/i);
+    expect(expected?.reviewNote).toMatch(/which column/i);
+  });
+
+  it('keeps the figure it did find visible without filing it under either column', () => {
+    const expected = fieldOf(result.fields, 'attendant:JOHN_MWAKA:expected');
+
+    // Which column the 3,200,000 belongs to is the thing that could not be read, so attaching it
+    // to one would invent a figure in a named column. It stays in the line the reviewer reads.
+    expect(expected?.rawValue).toBeNull();
+    expect(expected?.regionText).toContain('3,200,000');
+  });
+
+  it('leaves the rows that did read alone', () => {
+    const graceExpected = fieldOf(result.fields, 'attendant:GRACE_KIMARO:expected');
+
+    // Readable means unflagged, on the same report as an unreadable one: half a section is half
+    // a section, exactly as a partly read report is still a report.
+    expect(graceExpected?.amount).toBe(5_920_000);
+    expect(graceExpected?.needsReview).toBe(false);
+    expect(graceExpected?.confidence).toBe('HIGH');
+  });
+
+  it('keys a nameless row by its row number, not by how many fields precede it', () => {
+    // Third row on the report, and the unreadable one above it wrote two fields rather than
+    // three. `fields.length / 3 + 1` would have made this `attendant_2.666…`.
+    expect(fieldOf(result.fields, 'attendant:attendant_3:expected')?.amount).toBe(1_800_000);
+    expect(fieldOf(result.fields, 'attendant:attendant_3:collected')?.amount).toBe(1_700_000);
+  });
+
+  it('still asks for a person', () => {
+    expect(result.status).toBe('NEEDS_REVIEW');
+  });
+});
+
 describe('parseShiftReportText - partial failure', () => {
   const result = parseShiftReportText(REPORT_C);
 

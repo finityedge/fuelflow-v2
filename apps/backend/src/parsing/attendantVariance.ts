@@ -106,8 +106,9 @@ function parseAttendantFieldName(fieldName: string): { slug: string; reading: st
  * The printed name out of a field label like `John Mwaka - to collect`.
  *
  * The parser writes the label as `<name> - <what it is>`, so the separator is the reliable
- * part. A label with no separator is an unreadable row and yields null rather than a guess at
- * where the name stops.
+ * part. A label with no separator yields null rather than a guess at where the name stops — the
+ * shape the parser used to write for a row it could not split, and which reports parsed before
+ * that change still carry.
  */
 function nameFromLabel(label: string | null | undefined): string | null {
   if (!label) {

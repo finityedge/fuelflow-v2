@@ -50,10 +50,14 @@ function initialsFor(name: string): string {
 /**
  * The name the parser wrote into the label, put back.
  *
- * The rows for one attendant are labelled `Juma M. - to collect`, `Juma M. - collected`,
- * `Juma M. - variance`, or `Juma M. - unreadable row` when the two figures could not both be
- * read. Splitting on the first ` - ` would break on a name that contains one, so the known
- * suffixes are what come off.
+ * The rows for one attendant are labelled `Juma M. - to collect`, `Juma M. - collected` or
+ * `Juma M. - variance`. Splitting on the first ` - ` would break on a name that contains one, so
+ * the known suffixes are what come off.
+ *
+ * `unreadable row` is the fourth suffix and no longer printed: a row whose two figures could not
+ * be told apart is now written as the two figures, empty and flagged, so the manager can type
+ * them in. It stays in the list because reports parsed before that change are still in the
+ * database, and their rows still have to be named.
  */
 function attendantName(label: string): string {
   return label.replace(/ - (to collect|collected|variance|unreadable row)$/i, '').trim();
@@ -194,7 +198,11 @@ export interface AttendantRow {
   toCollect: ExtractedField | null;
   collected: ExtractedField | null;
   variance: ExtractedField | null;
-  /** Set when the row itself could not be split into two figures. */
+  /**
+   * A row-level flag on a report parsed before the parser wrote an unreadable row as its two
+   * figures. New reports never set this: the row arrives as an empty `to collect` and an empty
+   * `collected`, both flagged, both fillable.
+   */
   unreadable: ExtractedField | null;
   varianceAmount: number | null;
 }

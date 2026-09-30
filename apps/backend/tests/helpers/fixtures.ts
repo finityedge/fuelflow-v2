@@ -86,6 +86,34 @@ export const MIXED_REPORT_LINES = [
   'Cashback discount .............. 50,000',
 ];
 
+/**
+ * A report with one attendant row whose two figures could not be told apart.
+ *
+ * The state that used to be a dead end: the row is flagged, and a flag with no control that can
+ * clear it leaves the report in NEEDS_REVIEW for good. It is written as the two figures it should
+ * have — empty, both flagged — so the ordinary correction control fills them in, and this fixture
+ * is what proves a person can actually finish the job.
+ */
+export const UNREADABLE_ATTENDANT_ROW_LINES = [
+  'PETRONITE FUEL STATION',
+  'SHIFT REPORT',
+  'Station: Main Station',
+  'Date: 2026-03-19',
+  'TOTALIZER SALES ................ 18,450,000',
+  'CASH COLLECTED ................. 9,120,000',
+  'BANK DEPOSITS .................. 5,000,000',
+  'MOBILE MONEY',
+  'M-Pesa ......................... 4,200,000',
+  'CREDIT SALES',
+  'T 123 ABC ...................... 850,000',
+  'ATTENDANTS',
+  // One figure where two belong: enough to flag the row, not enough to know which column it is.
+  'JOHN MWAKA ....... 3,200,000',
+  'TANK DIP',
+  'TANK 1 PMS 12,000 11,500',
+  'RECONCILIATION',
+];
+
 /** A document that is not a shift report at all. */
 export const NOT_A_REPORT_LINES = [
   'INVOICE 4471',

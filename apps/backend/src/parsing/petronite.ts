@@ -419,6 +419,15 @@ function parseCreditSales(lines: Line[], range: { start: number; end: number }):
 function parseAttendantRows(lines: Line[], range: { start: number; end: number }): ParsedField[] {
   const fields: ParsedField[] = [];
 
+  /**
+   * How many rows this function has claimed, for naming one whose printed name could not be read.
+   *
+   * Counted rather than derived from `fields.length`, which is the earlier spelling: a row is not
+   * always three fields — an unreadable one is two — so dividing by three produced a fractional
+   * index and could hand two nameless rows the same key.
+   */
+  let rowCount = 0;
+
   for (let i = range.start; i < range.end; i += 1) {
     const line = lines[i];
     if (line.consumed || !hasDigit(line.flat) || isManualAdjustmentRow(line.flat)) {
@@ -435,23 +444,62 @@ function parseAttendantRows(lines: Line[], range: { start: number; end: number }
     const nameMatch = /^([A-Za-z][A-Za-z .'-]{2,40}?)(?=\s{2,}|\s+\d)/.exec(rowText);
     // Dot leaders are layout, not part of the name, and the lazy match absorbs them.
     const name = nameMatch ? nameMatch[1].replace(/[\s.]+$/, '').trim() : null;
-    const slug = name ? slugify(name) : `attendant_${fields.length / 3 + 1}`;
     const amounts = findAmounts(nameMatch ? rowText.slice(nameMatch[0].length) : rowText);
 
     line.consumed = true;
+    rowCount += 1;
+    const slug = name ? slugify(name) : `attendant_${rowCount}`;
+    const label = name ?? 'Attendant';
 
     if (amounts.length < 2) {
+      /*
+       * A row whose two figures could not be told apart, written as the two fields it should have
+       * — both empty, both flagged — rather than as one row-level flag.
+       *
+       * The difference is whether a person can settle it. A manager has the paper in front of
+       * them and can read both figures off it, and the correction path can only write to a field
+       * that exists. A single `attendant:<slug>:row` field leaves the flag with no control that
+       * can clear it: correcting one number would not produce the pair the row is for, so the
+       * report sits in NEEDS_REVIEW for good — and re-parsing cannot help, because the same
+       * ambiguous line is unreadable every time.
+       *
+       * Nothing is guessed at in the meantime. Both figures are null, so the variance stays
+       * unknown and the row is left out of the card's totals and out of the person's profile
+       * exactly as before (`shiftsNotComparable`, never a zero); the name is still read from the
+       * line, so the row is attributed to the right person. The one amount that *was* found is
+       * deliberately not attached to either column: which of the two it is, is the very thing
+       * that could not be read, and filing it under one would invent a figure in a specific
+       * column. It stays visible in `regionText`, where the reviewer reads the line for
+       * themselves.
+       */
+      const note =
+        amounts.length === 1
+          ? 'One figure was read on this row, but not which column it belongs to. Type both figures in from the paper report.'
+          : 'No figure could be read on this row. Type both figures in from the paper report.';
+
       fields.push(
         makeField({
-          fieldName: `attendant:${slug}:row`,
-          label: `${name ?? 'Attendant'} - unreadable row`,
+          fieldName: `attendant:${slug}:expected`,
+          label: `${label} - to collect`,
           group: 'ATTENDANT_RECONCILIATION',
-          rawValue: amounts[0]?.raw ?? null,
-          parsedValue: amounts[0] ? String(amounts[0].amount) : null,
-          amount: amounts[0]?.amount ?? null,
+          rawValue: null,
+          parsedValue: null,
+          amount: null,
           confidence: 'LOW',
           needsReview: true,
-          reviewNote: 'Expected and collected figures could not both be read from this row',
+          reviewNote: note,
+          regionText: line.text,
+        }),
+        makeField({
+          fieldName: `attendant:${slug}:collected`,
+          label: `${label} - collected`,
+          group: 'ATTENDANT_RECONCILIATION',
+          rawValue: null,
+          parsedValue: null,
+          amount: null,
+          confidence: 'LOW',
+          needsReview: true,
+          reviewNote: note,
           regionText: line.text,
         })
       );
@@ -461,7 +509,6 @@ function parseAttendantRows(lines: Line[], range: { start: number; end: number }
     const expected = amounts[0].amount;
     const collected = amounts[1].amount;
     const variance = amounts[2]?.amount ?? expected - collected;
-    const label = name ?? 'Attendant';
 
     fields.push(
       makeField({

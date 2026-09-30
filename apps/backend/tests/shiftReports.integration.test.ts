@@ -41,6 +41,7 @@ import {
   PARTIAL_REPORT_LINES,
   TIDY_REPORT_LINES,
   TWO_ADJUSTMENTS_REPORT_LINES,
+  UNREADABLE_ATTENDANT_ROW_LINES,
 } from './helpers/fixtures.js';
 
 let storageDir: string;
@@ -526,6 +527,68 @@ describe('accepting a flagged field', () => {
     const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
     expect(after.fields.find((field) => field.id === target.id)!.reviewAction).toBe('CORRECTED');
   }, 90_000);
+});
+
+/**
+ * The one flag on the review screen that used to have no control that could clear it.
+ *
+ * A row whose two figures could not be told apart is written as those two figures, empty and
+ * flagged, so the ordinary correction path settles it. Before that, the row was a single
+ * row-level flag with nothing to correct and nothing to accept, so a report carrying one could
+ * never leave NEEDS_REVIEW — and this is the test that says a person can finish the job.
+ */
+describe('an unreadable attendant row', () => {
+  it('is settled by typing the two figures in, and the report then leaves the queue', async () => {
+    const id = await uploadAndProcess(UNREADABLE_ATTENDANT_ROW_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+
+    const blank = before.fields.filter(
+      (field) => field.needsReview && field.fieldName.startsWith('attendant:')
+    );
+    expect(blank).toHaveLength(2);
+    // Both empty, and neither carries the one figure the parser did find: which column it
+    // belongs to is the thing that could not be read, so filing it under one would invent a
+    // figure in a named column.
+    expect(blank.every((field) => field.parsedValue === null && field.amount === null)).toBe(true);
+    // Sorted, because the detail's order is by field name and not by the order the parser wrote
+    // them in — pinning the wrong one here would make this test depend on an unrelated sort.
+    expect(blank.map((field) => field.label).sort()).toEqual([
+      'JOHN MWAKA - collected',
+      'JOHN MWAKA - to collect',
+    ]);
+
+    const toCollect = blank.find((field) => field.fieldName.endsWith(':expected'))!;
+    const collected = blank.find((field) => field.fieldName.endsWith(':collected'))!;
+    expect(toCollect.label).toBe('JOHN MWAKA - to collect');
+    expect(toCollect.reviewNote).toMatch(/type both figures in from the paper report/i);
+    // The one figure the parser did find is still readable on the row, which is what the manager
+    // checks their typing against.
+    expect(toCollect.regionText).toContain('3,200,000');
+
+    const first = await withTenantScope(tenantId, () =>
+      correctExtractedField(toCollect.id, { parsedValue: '3,200,000' }, userId)
+    );
+
+    // Half a row is not a settled row: the other figure is still missing, and scoring it as
+    // nothing would invent a shortfall the size of the day's takings.
+    expect(first!.status).toBe('NEEDS_REVIEW');
+
+    const second = await withTenantScope(tenantId, () =>
+      correctExtractedField(collected.id, { parsedValue: '3,150,000' }, userId)
+    );
+
+    expect(second!.status).toBe('PARSED');
+
+    const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    expect(after.needsReviewCount).toBe(0);
+    expect(after.report.status).toBe('PARSED');
+
+    // And the correction is a correction: the two figures are now the row's, with a variance
+    // derived from them rather than a flag nobody could move.
+    const expected = after.fields.find((field) => field.fieldName === 'attendant:JOHN_MWAKA:expected')!;
+    expect(expected.amount).toBe(3_200_000);
+    expect(expected.reviewAction).toBe('CORRECTED');
+  }, 60_000);
 });
 
 describe('partial failure', () => {

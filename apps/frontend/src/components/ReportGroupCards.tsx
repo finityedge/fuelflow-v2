@@ -369,7 +369,7 @@ export function AttendantCard({
    * What this card shows a control against, and therefore what it may sign off in one go.
    *
    * The *difference* is left out deliberately: it is a subtraction of the two figures beside it,
-   * so accepting it would be accepting arithmetic. The unreadable row is left out for a
+   * so accepting it would be accepting arithmetic. A row-level unreadable flag is left out for a
    * different reason — it stands for two figures that could not be told apart, and there is
    * nothing on it to confirm. Both are explained on the card itself.
    */
@@ -466,15 +466,18 @@ export function AttendantCard({
 
             <RowFlags fields={[row.unreadable, row.toCollect, row.collected]} />
 
-            {/* The one flagged field on this screen with no control of its own, so it says so
-                rather than leaving a flag nobody can clear. Its line could not be split into
-                the two figures the card compares, and neither accepting nor correcting one
-                number would produce the other — the reviewer has to read the paper. */}
+            {/* A row-level flag, which only reports parsed before the parser changed shape carry:
+                an unreadable row is now written as the two figures it should have, empty and
+                flagged, so the ordinary correction control fills them in. This one still has no
+                control of its own — neither correcting nor accepting one number would produce the
+                pair the row is for — so it says what to do instead. Re-parsing reads the same
+                line into those two fields, which is why that is the instruction rather than an
+                invitation to look at the paper and give up. */}
             {row.unreadable && (
               <p className="mt-2 text-xs text-muted">
-                The two figures on this row could not be told apart, so there is nothing here to
-                accept. Open “Show what was read from the PDF” below to check the line against
-                the paper report.
+                The two figures on this row could not be told apart, so there is nothing on it to
+                correct. Use “Try reading it again” above: the row comes back as the two figures
+                it should have, ready to type in from the paper report.
               </p>
             )}
 

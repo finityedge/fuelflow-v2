@@ -145,9 +145,19 @@ describe('attendantReadingsFromFields', () => {
     expect(readings[0]!.label).toBeNull();
   });
 
-  it('skips an unreadable row, which has no expected or collected figure', () => {
-    // `attendant:<slug>:row` is what the parser writes when it could not read both figures.
-    // It carries nothing this module can use.
+  it('skips a row-level flag, which has no expected or collected figure', () => {
+    /*
+     * The legacy shape — what the parser used to write for a row whose two figures could not be
+     * told apart, and what reports parsed before that change still carry. New rows arrive as an
+     * `expected` and a `collected` with null amounts instead (see the parser tests), which this
+     * module *does* read, as a reading with an unknown figure.
+     *
+     * Kept because the old rows are still in the database, and because it pins the rule that
+     * matters either way: a figure that could not be attributed to a column is never counted as
+     * one. The 3,200,000 below is deliberately attached to the row-level field — if this module
+     * ever picked it up, the amount would be scored into somebody's variance as an expected
+     * figure purely because of where it was filed.
+     */
     const readings = attendantReadingsFromFields([
       field('attendant:JOHN_MWAKA:row', 3_200_000, {
         label: 'JOHN MWAKA - unreadable row',
@@ -156,6 +166,32 @@ describe('attendantReadingsFromFields', () => {
     ]);
 
     expect(readings).toEqual([]);
+  });
+
+  it('reads the two empty fields of an unreadable row as a shift with no figures', () => {
+    // The shape the parser writes now: both figures present, both empty. The person *was* on the
+    // report, so this is a shift that cannot be compared rather than one that never happened —
+    // which is what the null variance and `provisional` say to the profile downstream.
+    const readings = attendantReadingsFromFields([
+      field('attendant:JOHN_MWAKA:expected', null, {
+        label: 'JOHN MWAKA - to collect',
+        needsReview: true,
+      }),
+      field('attendant:JOHN_MWAKA:collected', null, {
+        label: 'JOHN MWAKA - collected',
+        needsReview: true,
+      }),
+    ]);
+
+    expect(readings).toHaveLength(1);
+    expect(readings[0]).toMatchObject({
+      slug: 'JOHN_MWAKA',
+      expected: null,
+      collected: null,
+      variance: null,
+      provisional: true,
+      label: 'JOHN MWAKA',
+    });
   });
 
   it('skips field names that are not attendant readings', () => {
