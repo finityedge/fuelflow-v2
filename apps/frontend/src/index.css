@@ -96,3 +96,58 @@
     @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold;
   }
 }
+
+/*
+ * Printing.
+ *
+ * The findings sheet is the one screen whose output is meant to leave the product — it exists
+ * to be printed and put on a station owner's desk — so the app gets one set of print rules and
+ * this is it. The chrome is hidden at the source, in `Layout`, with Tailwind's `print:` variant;
+ * what is left here is the part a utility class cannot express.
+ *
+ * The ink is the interesting bit. A variance is red or green and that colour is the finding, so
+ * `print-color-adjust: exact` is on for the sheet: the browser's default is to drop backgrounds
+ * and lighten everything to save a cartridge, which would turn a page whose whole content is a
+ * red figure into a page of grey ones. The rest is pagination — a table row or a card split
+ * across two sheets loses its heading on the first and its figures on the second.
+ */
+
+/* Outside a media query on purpose: `@page` is not a conditional rule, and a page margin
+   declared inside `@media print` is ignored by every browser that matters. */
+@page {
+  margin: 14mm;
+}
+
+@media print {
+  html,
+  body {
+    background: #fff;
+  }
+
+  .print-sheet {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-sheet .card {
+    border-color: #e2e8f0;
+    box-shadow: none;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .card,
+  tr,
+  li {
+    break-inside: avoid;
+  }
+
+  /* The document is read on paper, where a link is a dead end. The sentence around it carries
+     the meaning, and a printed URL in the middle of one only gets in the way. */
+  .print-sheet a {
+    text-decoration: none;
+    color: inherit;
+  }
+}

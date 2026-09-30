@@ -16,7 +16,7 @@ export interface CorrectionSession {
   savingFieldId: string | null;
   start: (fieldId: string) => void;
   cancel: () => void;
-  save: (fieldId: string, value: string) => Promise<void>;
+  save: (fieldId: string, value: string, note?: string) => Promise<void>;
 }
 
 interface FieldValueProps {
@@ -48,10 +48,16 @@ const SIZE: Record<'sm' | 'md' | 'lg', string> = {
  */
 export function FieldValue({ field, session, format = formatTZS, size = 'md', absent }: FieldValueProps) {
   const [draft, setDraft] = useState(field?.parsedValue ?? '');
+  const [note, setNote] = useState('');
   const isEditing = Boolean(field) && session.editingFieldId === field?.id;
 
   useEffect(() => {
     setDraft(field?.parsedValue ?? '');
+    // Clear the reason on every entry into edit mode. A note is a statement about one
+    // correction; leaving the last one in the box would let it be carried onto a value it
+    // was never written about, which is exactly the kind of stale evidence this is meant
+    // to prevent.
+    setNote('');
   }, [field?.parsedValue, isEditing]);
 
   if (!field) {
@@ -62,41 +68,58 @@ export function FieldValue({ field, session, format = formatTZS, size = 'md', ab
     const isSaving = session.savingFieldId === field.id;
     return (
       <form
-        className="flex items-center justify-end gap-2"
+        className="flex flex-col items-end gap-2"
         onSubmit={(event) => {
           event.preventDefault();
-          void session.save(field.id, draft);
+          void session.save(field.id, draft, note);
         }}
       >
+        <div className="flex items-center gap-2">
+          <input
+            autoFocus
+            className="input w-32 py-1.5 text-right font-mono text-sm tabular-nums sm:w-40"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                session.cancel();
+              }
+            }}
+            inputMode="decimal"
+            aria-label={`Corrected value for ${field.label}`}
+          />
+          <button
+            type="submit"
+            className="btn-primary px-3 py-1.5 text-xs"
+            disabled={isSaving || draft.trim().length === 0}
+          >
+            {isSaving ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost px-2 py-1.5"
+            onClick={session.cancel}
+            aria-label="Cancel"
+          >
+            <CloseIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/*
+          Optional on purpose. The value alone explains the common correction — the parser
+          read 450000 as 45000 — and a required box there would be a tax on the easy case.
+          It stays visible anyway, because the correction that removed a variance is the one
+          a station owner will ask about, and the reviewer is the only person who can answer.
+        */}
         <input
-          autoFocus
-          className="input w-32 py-1.5 text-right font-mono text-sm tabular-nums sm:w-40"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              event.preventDefault();
-              session.cancel();
-            }
-          }}
-          inputMode="decimal"
-          aria-label={`Corrected value for ${field.label}`}
+          className="input w-full max-w-xs py-1.5 text-xs"
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          maxLength={500}
+          placeholder="Why? (optional — kept on the audit trail)"
+          aria-label={`Reason for correcting ${field.label}`}
         />
-        <button
-          type="submit"
-          className="btn-primary px-3 py-1.5 text-xs"
-          disabled={isSaving || draft.trim().length === 0}
-        >
-          {isSaving ? 'Saving…' : 'Save'}
-        </button>
-        <button
-          type="button"
-          className="btn-ghost px-2 py-1.5"
-          onClick={session.cancel}
-          aria-label="Cancel"
-        >
-          <CloseIcon className="h-4 w-4" />
-        </button>
       </form>
     );
   }
@@ -190,6 +213,21 @@ export function RowFlags({ fields }: { fields: (ExtractedField | null | undefine
           {corrected.length > 1 ? ` (${corrected.length} figures)` : ''}
         </p>
       )}
+
+      {/*
+        The reviewer's own words, shown where the correction is. A note nobody can read
+        back is not evidence — it would only ever be seen by opening the database.
+      */}
+      {corrected
+        .filter((field) => field.correctionNote)
+        .map((field) => (
+          <p key={field.id} className="text-xs text-muted">
+            {corrected.length > 1 && (
+              <span className="font-semibold">{nameInRow(field)}: </span>
+            )}
+            <span className="italic">“{field.correctionNote}”</span>
+          </p>
+        ))}
 
       {evidence.length > 0 && (
         <details>

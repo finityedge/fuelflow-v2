@@ -41,6 +41,20 @@ export function formatSignedTZS(value: number | null | undefined): string {
 }
 
 /**
+ * `1240` -> `1,240 L`.
+ *
+ * Fuel is measured in whole litres at the pump and on the tape, so the unit is carried with
+ * the number rather than left to the column heading. A bare `1,240` beside a `TZS 1,240` on
+ * the same screen is the kind of ambiguity that gets a leak report misread as a cash figure.
+ */
+export function formatLitres(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '—';
+  }
+  return `${DECIMALS.format(value)} L`;
+}
+
+/**
  * A report's date, as a calendar day.
  *
  * A bare `2026-03-12` is read by `new Date` as UTC midnight, which is the *previous* day for
@@ -220,4 +234,20 @@ export function greetingFor(date: Date = new Date()): string {
     return 'Good afternoon';
   }
   return 'Good evening';
+}
+
+/**
+ * The email's local part, with its first letter capitalised, for an opening greeting.
+ *
+ * The app stores no display name on a user — there is no such column — so the address is the
+ * only thing we know to call someone. Capitalised because it opens a sentence: "Good morning,
+ * franc" reads as a bug, and "Good morning, Franc" does not. Falls back to "there" rather than
+ * to an empty greeting, since the fallback has to produce a sentence either way.
+ */
+export function nameFor(email: string | null | undefined): string {
+  if (!email) {
+    return 'there';
+  }
+  const local = email.split('@')[0] ?? '';
+  return local.length > 0 ? local[0]!.toUpperCase() + local.slice(1) : 'there';
 }

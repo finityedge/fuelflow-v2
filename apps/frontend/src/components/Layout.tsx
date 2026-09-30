@@ -2,9 +2,20 @@ import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuthStore, selectIsAuthenticated } from '../stores/authStore.js';
 import { logout } from '../lib/auth.js';
-import { canUpload, canCorrect, roleLabel } from '../lib/rbac.js';
+import { canUpload, canCorrect, isAttendant, roleLabel } from '../lib/rbac.js';
 import { LogoLockup } from './Logo.js';
-import { HomeIcon, ReportsIcon, CloudUploadIcon, LogoutIcon, MenuIcon, CloseIcon } from './icons.js';
+import {
+  HomeIcon,
+  ReportsIcon,
+  CloudUploadIcon,
+  LogoutIcon,
+  MenuIcon,
+  CloseIcon,
+  AlertCircleIcon,
+  TankIcon,
+  UsersIcon,
+  SettingsIcon,
+} from './icons.js';
 import type { AuthUser } from '../types/auth.js';
 
 interface LayoutProps {
@@ -23,21 +34,45 @@ function getInitials(email: string): string {
 /**
  * The sidebar's contents, shared by the fixed desktop column and the mobile drawer.
  *
- * Only two nav rows, because only two of them lead anywhere. A mock of this screen lists
- * Dashboard, Shift Reports, Attendants, Tanks and Settings; the last three have no route, no
- * API and no screen behind them, and a nav item that opens a blank page is worse than one
- * that was never drawn. They go in when they exist.
+ * Only the rows that lead somewhere are drawn, and Settings is the last one to have arrived:
+ * a mock of this screen listed it from the start, and a nav item that opens a blank page is
+ * worse than one that was never drawn, so it went in when the screen behind it existed.
+ *
+ * The queue sits directly under the dashboard because it is the only row here that is a task
+ * rather than a place: the dashboard says how many reports are waiting, and this is the row
+ * that goes and does them. Wet stock follows the queue rather than leading it — a leak is
+ * found by reading shifts, and there is nothing to look at until those shifts have been read.
+ * Attendants comes last for the same reason: it is the same reading of the same shifts, taken
+ * one shift further, and it is the only row here whose subject is a person.
+ *
+ * Settings sits below all of them rather than among them, because it is not a view of the
+ * shifts at all — it is the vocabulary those views are read against, and a manager arrives at
+ * it once the figures have shown them something to fix.
+ *
+ * The findings sheet is not a row at all. It is reached from the dashboard, where the figures
+ * it summarises already are — a nav entry would make it look like a sixth place to go rather
+ * than what it is, which is the dashboard written down.
+ *
+ * For an attendant the first row is the only row, and it is not called Dashboard: `/` draws
+ * their own record for them, so the row is named for what it opens. That is also why the
+ * capability predicates above leave them with nothing — every other row here is a view of the
+ * whole station's shifts, and the one screen that is theirs needed no permission to add.
  */
 function SidebarBody({ user, onNavigate }: { user: AuthUser; onNavigate?: () => void }) {
   const location = useLocation();
   const uploadAllowed = canUpload(user.role);
   const correctAllowed = canCorrect(user.role);
+  const attendant = isAttendant(user.role);
 
   const navItems = [
-    { to: '/', icon: HomeIcon, label: 'Dashboard', exact: true },
+    { to: '/', icon: HomeIcon, label: attendant ? 'My shifts' : 'Dashboard', exact: true },
+    ...(correctAllowed ? [{ to: '/review', icon: AlertCircleIcon, label: 'Review queue' }] : []),
+    ...(correctAllowed ? [{ to: '/tanks', icon: TankIcon, label: 'Wet stock' }] : []),
+    ...(correctAllowed ? [{ to: '/attendants', icon: UsersIcon, label: 'Attendants' }] : []),
     ...(correctAllowed
       ? [{ to: '/shift-reports/recent', icon: ReportsIcon, label: 'Shift reports' }]
       : []),
+    ...(correctAllowed ? [{ to: '/settings', icon: SettingsIcon, label: 'Station settings' }] : []),
   ];
 
   const isActive = (to: string, exact?: boolean) =>
@@ -93,7 +128,7 @@ function SidebarBody({ user, onNavigate }: { user: AuthUser; onNavigate?: () => 
           </div>
         </div>
         <button
-          onClick={logout}
+          onClick={() => void logout()}
           className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-400 transition-all duration-200 hover:bg-slate-800/60 hover:text-white"
         >
           <LogoutIcon className="h-5 w-5" />
@@ -115,12 +150,15 @@ export function Layout({ children }: LayoutProps) {
 
   return (
     <div className="flex min-h-screen bg-background">
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col bg-sidebar lg:flex">
+      {/* The chrome is hidden at the source rather than by a stylesheet reaching into it: a
+          printed findings sheet is a document, and a document with a sidebar down one side of
+          it is a screenshot. `print:hidden` is the whole of that rule. */}
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col bg-sidebar lg:flex print:hidden">
         <SidebarBody user={user} />
       </aside>
 
       {mobileMenuOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden">
+        <div className="fixed inset-0 z-50 lg:hidden print:hidden">
           <div
             className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
             onClick={() => setMobileMenuOpen(false)}
@@ -140,11 +178,11 @@ export function Layout({ children }: LayoutProps) {
         </div>
       )}
 
-      <div className="flex flex-1 flex-col lg:ml-64">
+      <div className="flex flex-1 flex-col lg:ml-64 print:ml-0">
         {/* Mobile chrome only — the menu button, and who you are signed in as. On desktop
             the sidebar column carries both, so this bar disappears entirely and the page
             heading sits at the top of the content where it belongs. */}
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-4 border-b border-border bg-surface/80 px-4 backdrop-blur-xl sm:px-6 lg:hidden">
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-4 border-b border-border bg-surface/80 px-4 backdrop-blur-xl sm:px-6 lg:hidden print:hidden">
           <button
             onClick={() => setMobileMenuOpen(true)}
             className="rounded-lg p-2 text-muted hover:bg-slate-100"
@@ -166,7 +204,7 @@ export function Layout({ children }: LayoutProps) {
           </div>
         </header>
 
-        <main className="flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
+        <main className="flex-1 p-4 sm:p-6 lg:p-8 print:p-0">{children}</main>
       </div>
     </div>
   );

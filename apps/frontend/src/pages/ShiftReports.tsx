@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { ShiftReportListItem, Station } from '@fuelflow/shared';
+import type { ShiftReportListItem, StationSummary } from '@fuelflow/shared';
 import { Layout } from '../components/Layout.js';
 import { PageHeading } from '../components/PageHeading.js';
 import { ReportFilterBar } from '../components/ReportFilterBar.js';
@@ -31,7 +31,7 @@ const PAGE_SIZE = 25;
 export function ShiftReports() {
   const user = useAuthStore((state) => state.user);
 
-  const [stations, setStations] = useState<Station[]>([]);
+  const [stations, setStations] = useState<StationSummary[]>([]);
   const [stationId, setStationId] = useState('');
   const [status, setStatus] = useState<StatusFilter>('ALL');
   const [range, setRange] = useState<DateRangeFilter>('ALL');

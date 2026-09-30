@@ -1,4 +1,4 @@
-import type { Station } from '@fuelflow/shared';
+import type { StationSummary } from '@fuelflow/shared';
 import { BuildingIcon, CalendarIcon } from './icons.js';
 import {
   DATE_RANGE_FILTERS,
@@ -30,7 +30,7 @@ export function ReportFilterBar({
   onRangeChange,
   onClear,
 }: {
-  stations: Station[];
+  stations: StationSummary[];
   stationId: string;
   status: StatusFilter;
   range: DateRangeFilter;

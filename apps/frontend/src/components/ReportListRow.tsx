@@ -82,10 +82,20 @@ export function ReportListHeadings() {
 export function ReportListRow({
   report,
   showStation,
+  fromQueue = false,
 }: {
   report: ShiftReportListItem;
   /** Off when every row shares a station, which is most of the time. */
   showStation: boolean;
+  /**
+   * Whether the row was opened from the review queue.
+   *
+   * It changes nothing about the row and everything about the destination: the detail screen
+   * reads `?from=queue` off the URL and offers "next in the queue" instead of a dead end. The
+   * marker travels in the URL rather than in a store so that a link somebody bookmarked, or
+   * pasted to a colleague, still means what it says.
+   */
+  fromQueue?: boolean;
 }) {
   const meta = [
     report.fileName,
@@ -95,7 +105,7 @@ export function ReportListRow({
 
   return (
     <Link
-      to={`/shift-reports/${report.id}`}
+      to={`/shift-reports/${report.id}${fromQueue ? '?from=queue' : ''}`}
       className="flex flex-col gap-3 px-6 py-4 transition-colors hover:bg-slate-50 sm:flex-row sm:items-center sm:gap-4"
     >
       <div className="min-w-0 flex-1">

@@ -379,3 +379,37 @@ export function SettingsIcon(props: SVGProps<SVGSVGElement>) {
     </BaseIcon>
   );
 }
+
+/** The one action on the findings sheet, so it is the one icon that has to read as "paper". */
+export function PrinterIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M6 9V3h12v6" />
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+      <path d="M6 14h12v7H6z" />
+    </BaseIcon>
+  );
+}
+
+/** Adding a row — a tank, an attendant, a spelling. */
+export function PlusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </BaseIcon>
+  );
+}
+
+/** Letting go of one. Never deletes anything — every use of it retires or unlinks. */
+export function TrashIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </BaseIcon>
+  );
+}

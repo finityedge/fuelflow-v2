@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { DashboardSummary, Station } from '@fuelflow/shared';
+import type { DashboardSummary, StationSummary } from '@fuelflow/shared';
 import { Layout } from '../components/Layout.js';
 import { PageHeading } from '../components/PageHeading.js';
 import { StatCard } from '../components/StatCard.js';
@@ -24,27 +24,12 @@ import { useAuthStore } from '../stores/authStore.js';
 import { canCorrect, canUpload } from '../lib/rbac.js';
 import { getDashboard } from '../lib/dashboard.js';
 import { listStations } from '../lib/stations.js';
-import { formatLongDate, formatTZS, greetingFor } from '../lib/format.js';
+import { formatLongDate, formatTZS, greetingFor, nameFor } from '../lib/format.js';
 
 const PERIOD_OPTIONS = [
   { days: 30, label: '30 days' },
   { days: 90, label: '90 days' },
 ] as const;
-
-/**
- * The email's local part, with its first letter capitalised.
- *
- * The app stores no display name on a user — there is no such column — so the address is
- * the only thing we know to call someone. Capitalised because it opens a sentence:
- * "Good morning, franc" reads as a bug, and "Good morning, Franc" does not.
- */
-function nameFor(email: string | undefined): string {
-  if (!email) {
-    return 'there';
-  }
-  const local = email.split('@')[0] ?? '';
-  return local.length > 0 ? local[0]!.toUpperCase() + local.slice(1) : 'there';
-}
 
 function SkeletonCard() {
   return (
@@ -60,7 +45,7 @@ function SkeletonCard() {
 export function Home() {
   const user = useAuthStore((state) => state.user);
 
-  const [stations, setStations] = useState<Station[]>([]);
+  const [stations, setStations] = useState<StationSummary[]>([]);
   /** Empty string means every station this user may see, which is also the right default. */
   const [stationId, setStationId] = useState('');
   const [periodDays, setPeriodDays] = useState<number>(30);
@@ -179,12 +164,29 @@ export function Home() {
             ))}
           </div>
 
+          {/* The findings sheet is the dashboard written down — the same figures, one station,
+              laid out to be printed. It sits here rather than in the sidebar because that is
+              what it is: not a sixth place to go, but this page on paper. It carries the
+              station the reader is already looking at, so it opens on their figures. */}
+          {correctAllowed && (
+            <Link
+              to={stationId ? `/findings?stationId=${stationId}` : '/findings'}
+              className="btn-secondary"
+              title="A printable summary of this dashboard for one station"
+            >
+              <FileIcon className="h-4 w-4" />
+              Findings sheet
+            </Link>
+          )}
+
           {/* A bell that points at the review queue. It carries no notification feed —
               there is none — so it says in words what the badge is counting, and appears
-              only for people who can act on it. */}
+              only for people who can act on it. It opens the queue rather than the history
+              list, because the count is work to do and the history list is not where you
+              do it. */}
           {correctAllowed && attentionCount > 0 && (
             <Link
-              to="/shift-reports/recent"
+              to="/review"
               className="btn-secondary relative"
               title={`${attentionCount} report${attentionCount === 1 ? '' : 's'} need your attention`}
             >
@@ -339,7 +341,7 @@ export function Home() {
                   ? 'Nothing uploaded yet'
                   : 'Nothing is waiting on you'
             }
-            to={correctAllowed ? '/shift-reports/recent' : undefined}
+            to={correctAllowed ? '/review?tab=NEEDS_REVIEW' : undefined}
           />
 
           <StatCard
@@ -353,7 +355,7 @@ export function Home() {
                 ? 'No figures were extracted — check the file'
                 : 'Every upload was read'
             }
-            to={correctAllowed ? '/shift-reports/recent' : undefined}
+            to={correctAllowed ? '/review?tab=FAILED' : undefined}
           />
 
           <StatCard

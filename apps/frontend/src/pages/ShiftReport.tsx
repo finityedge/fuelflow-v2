@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import type { DashboardTrendPoint, ExtractedFieldGroup, ShiftReportDetail } from '@fuelflow/shared';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import type {
+  DashboardTrendPoint,
+  ExtractedFieldGroup,
+  ShiftReportDetail,
+  ShiftReportListItem,
+} from '@fuelflow/shared';
 import { Layout } from '../components/Layout.js';
 import { PageHeading } from '../components/PageHeading.js';
 import { VarianceHero } from '../components/VarianceHero.js';
@@ -25,7 +30,7 @@ import {
 } from '../components/icons.js';
 import { useAuthStore } from '../stores/authStore.js';
 import { canCorrect } from '../lib/rbac.js';
-import { correctField, getShiftReport, reparseShiftReport } from '../lib/shiftReports.js';
+import { correctField, getNextUnreviewed, getShiftReport, reparseShiftReport } from '../lib/shiftReports.js';
 import { getDashboard } from '../lib/dashboard.js';
 import { formatRelativeTime, formatReportDateLong } from '../lib/format.js';
 
@@ -89,6 +94,28 @@ export function ShiftReport() {
   const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
   const [reparsing, setReparsing] = useState(false);
+
+  /**
+   * Whether this report was opened from the review queue.
+   *
+   * Read off the URL rather than kept in a store, so that opening the report from a bookmark,
+   * a shared link or a fresh tab still offers the walk-through — and so that a report opened
+   * from the history list stays a report rather than becoming a queue step.
+   */
+  const [searchParams] = useSearchParams();
+  const fromQueue = searchParams.get('from') === 'queue';
+  /** The next report still waiting, or null when this is the last one. */
+  const [nextReport, setNextReport] = useState<ShiftReportListItem | null>(null);
+  const [nextLoading, setNextLoading] = useState(false);
+  /**
+   * Whether the "what is next?" lookup itself failed.
+   *
+   * Kept apart from `nextReport === null` on purpose. "Nothing else is waiting" and "we could
+   * not find out" are opposite things to tell somebody who is working through a backlog, and
+   * one shared null would report the second as the first — telling a manager they are finished
+   * on the strength of a failed request.
+   */
+  const [nextFailed, setNextFailed] = useState(false);
 
   /**
    * The station's other shifts, for the trend beside the variance. `null` means it has not
@@ -202,15 +229,63 @@ export function ShiftReport() {
     };
   }, [stationId, reportStatus, version]);
 
+  /**
+   * Work out what comes next in the queue, and recompute it after every change to this report.
+   *
+   * `detail` is a dependency rather than `version` because a successful correction replaces the
+   * whole detail object, and the queue genuinely moves when it does: fixing the last flagged
+   * figure takes this report *out* of the queue, so "the oldest one still waiting" is a
+   * different report than it was a moment ago. Recomputing here keeps the button honest instead
+   * of offering to take the manager somewhere they have already been.
+   */
+  useEffect(() => {
+    if (!fromQueue || !id || !detail) {
+      return;
+    }
+
+    let cancelled = false;
+    setNextLoading(true);
+    setNextFailed(false);
+
+    void (async () => {
+      try {
+        // Walk the same queue the link came from: a failed report steps to the next failed
+        // one, everything else to the next awaiting review.
+        const next = await getNextUnreviewed(
+          id,
+          detail.report.status === 'FAILED' ? 'FAILED' : 'NEEDS_REVIEW'
+        );
+        if (!cancelled) {
+          setNextReport(next);
+        }
+      } catch {
+        // Not being able to say what is next must not break the report in front of you — the
+        // bar falls back to "back to the queue", which always works.
+        if (!cancelled) {
+          setNextReport(null);
+          setNextFailed(true);
+        }
+      } finally {
+        if (!cancelled) {
+          setNextLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fromQueue, id, detail]);
+
   const handleCorrect = useCallback(
-    async (fieldId: string, value: string) => {
+    async (fieldId: string, value: string, note?: string) => {
       if (!id) {
         return;
       }
       setSavingFieldId(fieldId);
       setSaveError(null);
       try {
-        await correctField(id, fieldId, value);
+        await correctField(id, fieldId, value, note);
         // Re-read rather than patch in place: the variance, the per-row differences and the
         // report's review state are all derived from the fields, and the server derives them.
         await load();
@@ -351,6 +426,51 @@ export function ShiftReport() {
             <p className="mt-1 text-sm text-muted">
               This page updates by itself as soon as the figures are ready.
             </p>
+          </div>
+        )}
+
+        {/*
+          The walk-through bar, shown only when this report was opened from the queue. It sits
+          above everything else because its job is to answer "where am I and what is next?"
+          before the reader gets absorbed in the figures.
+        */}
+        {fromQueue && (
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-white p-4">
+            <Link
+              to="/review"
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary hover:underline"
+            >
+              <ChevronRightIcon className="h-4 w-4 rotate-180" />
+              Review queue
+            </Link>
+
+            {nextLoading ? (
+              <span className="text-sm text-muted">Looking for the next one…</span>
+            ) : nextFailed ? (
+              <span className="text-sm text-muted">
+                Couldn’t check what is waiting —{' '}
+                <Link to="/review" className="font-semibold text-primary hover:underline">
+                  back to the queue
+                </Link>
+              </span>
+            ) : nextReport ? (
+              <Link
+                to={`/shift-reports/${nextReport.id}?from=queue`}
+                // Primary only once this report is settled: while figures are still flagged,
+                // the next thing to do is here, and a primary "skip" would pull the eye off it.
+                className={isComplete ? 'btn-primary' : 'btn-secondary'}
+              >
+                Next: {formatReportDateLong(nextReport.reportDate)}
+                <ChevronRightIcon className="h-4 w-4" />
+              </Link>
+            ) : (
+              // The end of the queue. This is news, and it is good news, so it does not look
+              // like an empty state.
+              <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-success">
+                <CheckIcon className="h-4 w-4" />
+                Nothing else is waiting
+              </span>
+            )}
           </div>
         )}
 

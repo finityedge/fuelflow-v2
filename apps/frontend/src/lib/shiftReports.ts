@@ -10,31 +10,18 @@
 import type {
   ExtractedField,
   ShiftReportDetail,
+  ShiftReportListItem,
   ShiftReportListPage,
   ShiftReportState,
 } from '@fuelflow/shared';
-import { apiClient, getAccessToken } from './api.js';
+import { ApiError, apiClient, getAccessToken, readError } from './api.js';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
-export class ApiError extends Error {
-  readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-  }
-}
-
-async function readError(res: Response, fallback: string): Promise<ApiError> {
-  try {
-    const body = (await res.json()) as { error?: string };
-    return new ApiError(res.status, body.error ?? fallback);
-  } catch {
-    return new ApiError(res.status, fallback);
-  }
-}
+// Re-exported rather than moved at every call site: `ApiError` and `readError` came from here
+// first, and the upload path below still throws it by hand for a failure the fetch helpers
+// never see.
+export { ApiError } from './api.js';
 
 export interface UploadOptions {
   file: File;
@@ -128,6 +115,13 @@ export interface ShiftReportListQuery {
   /** Inclusive UTC ISO days, matched against the report's own date. */
   from?: string;
   to?: string;
+  /**
+   * Which end of the list to start from, defaulting to newest.
+   *
+   * Sent to the server rather than reversed on the client: reversing one page only reverses
+   * that page, so a queue that paged would splice newer rows underneath older ones.
+   */
+  order?: 'newest' | 'oldest';
   limit?: number;
   /** How many matching reports to skip, for "load more". */
   offset?: number;
@@ -155,6 +149,9 @@ export async function listShiftReports(
   if (query.to) {
     params.set('to', query.to);
   }
+  if (query.order) {
+    params.set('order', query.order);
+  }
   if (query.limit) {
     params.set('limit', String(query.limit));
   }
@@ -170,16 +167,37 @@ export async function listShiftReports(
   return (await res.json()) as ShiftReportListPage;
 }
 
+/**
+ * The next report still waiting on a human, for the queue's "next" step.
+ *
+ * Deliberately a fresh query rather than an index into a list the caller already holds. After
+ * the last flagged figure is corrected the report becomes PARSED and *leaves* the queue, so
+ * there is no longer a position to advance from — and "the oldest thing still waiting" is the
+ * right answer in both cases anyway: mid-review it skips the report in front of you, and after
+ * the fix it is simply the next one along.
+ *
+ * The 100 is the list API's ceiling and a real bound worth stating: a queue deeper than that
+ * is walked in order across the first hundred, not indefinitely.
+ */
+export async function getNextUnreviewed(
+  currentReportId: string,
+  status: 'NEEDS_REVIEW' | 'FAILED' = 'NEEDS_REVIEW'
+): Promise<ShiftReportListItem | null> {
+  const { reports } = await listShiftReports({ status, order: 'oldest', limit: 100 });
+  return reports.find((report) => report.id !== currentReportId) ?? null;
+}
+
 export async function correctField(
   reportId: string,
   fieldId: string,
-  parsedValue: string
+  parsedValue: string,
+  note?: string
 ): Promise<{ field: ExtractedField; status: string }> {
   const res = await apiClient(
     `/shift-reports/${encodeURIComponent(reportId)}/fields/${encodeURIComponent(fieldId)}`,
     {
       method: 'PATCH',
-      body: JSON.stringify({ parsedValue }),
+      body: JSON.stringify(note ? { parsedValue, note } : { parsedValue }),
     }
   );
   if (!res.ok) {

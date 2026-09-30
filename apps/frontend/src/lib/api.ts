@@ -1,7 +1,35 @@
-import type { AuthenticatedUser, AuthTokens } from '@fuelflow/shared';
 import { useAuthStore } from '../stores/authStore.js';
+import type { AuthResponse } from '../types/auth.js';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api';
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api';
+
+/**
+ * A request the server refused, carrying the server's own words.
+ *
+ * The message is the point. These screens are full of refusals that are only useful if the
+ * reason survives the trip — "that key already belongs to Grace Kimaro" is a thing a person can
+ * act on, and "the request failed" is not. The status is carried too, so a caller can tell a
+ * refusal it caused from one it should offer to retry.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+/** The server's `{ error }` body when there is one, and the caller's own wording when there is not. */
+export async function readError(res: Response, fallback: string): Promise<ApiError> {
+  try {
+    const body = (await res.json()) as { error?: string };
+    return new ApiError(res.status, body.error ?? fallback);
+  } catch {
+    return new ApiError(res.status, fallback);
+  }
+}
 
 let refreshPromise: Promise<string | null> | null = null;
 
@@ -24,23 +52,20 @@ function clearAuthAndRedirect(): void {
 async function refreshAccessToken(): Promise<string | null> {
   if (!refreshPromise) {
     refreshPromise = (async () => {
-      const refreshToken = useAuthStore.getState().refreshToken;
-      if (!refreshToken) {
-        return null;
-      }
-
       try {
         const res = await fetch(`${API_BASE}/auth/refresh`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken }),
+          // The refresh token is an httpOnly cookie, so it only travels when the request
+          // asks for credentials. There is no body: the server reads the cookie, and a
+          // client that has to send the token is a client that has to store it.
+          credentials: 'include',
         });
 
         if (!res.ok) {
           return null;
         }
 
-        const data = (await res.json()) as AuthTokens & { user: AuthenticatedUser };
+        const data = (await res.json()) as AuthResponse;
         useAuthStore.getState().setAuth(data);
         return data.accessToken;
       } finally {
