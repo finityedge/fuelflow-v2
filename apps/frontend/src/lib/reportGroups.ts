@@ -105,6 +105,15 @@ export interface CashView {
   /** Discounts, expenses and write-offs. Always flagged — they are the entries nothing can verify. */
   adjustments: ExtractedField[];
   /**
+   * Money taken over the counter, one row per product.
+   *
+   * Present only on a report that itemises its sales instead of printing a total for them, which
+   * is the real Petronite layout. These rows are not decoration: the shift's total sales — and so
+   * the headline variance — is the sum of these and the credit sales beside them, derived on
+   * every read. A manager who cannot see them cannot check the figure the whole screen is about,
+   * and cannot correct one when the parser reads a column off.
+   */
+  sales: ExtractedField[];  /**
    * Cash plus mobile money: exactly the figures the headline variance subtracts, and nothing
    * else. A total that quietly included the bank deposits would disagree with the number at
    * the top of the page, and there would be no way to tell which one was wrong.
@@ -124,6 +133,17 @@ export function cashView(fields: ExtractedField[]): CashView {
         BY_NAME(a.fieldName, b.fieldName)
     );
   const deposits = fields.filter((field) => field.fieldName === 'bank_deposit_total');
+  /**
+   * The itemised sales, sorted by product name.
+   *
+   * The stored fields come back ordered by name and these have no printed index to recover the
+   * document's order from, so the label is what is sorted — it is the name printed on the report
+   * and the thing a manager is looking for when they go to check one.
+   */
+  const sales = fields
+    .filter((field) => field.fieldName.startsWith('cash_sales:'))
+    .sort((a, b) => BY_NAME(a.label, b.label));
+
   /**
    * Manual entries, in the order the parser met them.
    *
@@ -146,6 +166,7 @@ export function cashView(fields: ExtractedField[]): CashView {
     mobile,
     deposits,
     adjustments,
+    sales,
     countedTotal: countedIncomplete ? null : sum(counted.map((field) => amountOf(field) ?? 0)),
     countedIncomplete,
   };

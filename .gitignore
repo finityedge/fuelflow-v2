@@ -36,6 +36,17 @@ coverage/
 # never be committed; in Docker they live in the pdf-storage volume instead.
 apps/backend/storage/
 
+# Sample shift reports kept at the repository root for parser work. Same reason as above, and
+# the one that actually bites: the real Petronite sample is a live station's figures with real
+# names and a real bank account number on it. The parser's tests read it from disk and skip
+# themselves where it is absent (`tests/helpers/realReport.ts`); the document itself is not
+# committed, and a `git add -A` must not change that.
+/*.pdf
+
+# The same sample's extracted text, which is what the parser tests consume. Kept beside the
+# reasoning rather than in a tracked fixture file, so the assertions ship and the data does not.
+apps/backend/tests/fixtures/
+
 # Docker
 .dockerignore
 

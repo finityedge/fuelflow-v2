@@ -1,5 +1,5 @@
 import { useState, type ComponentType, type ReactNode, type SVGProps } from 'react';
-import type { ExtractedField } from '@fuelflow/shared';
+import type { ExtractedField, ReconciliationSummary } from '@fuelflow/shared';
 import { FieldValue, RowFlags, type CorrectionSession } from './FieldValue.js';
 import { CheckIcon, PlateIcon, TankIcon, UsersIcon, WalletIcon } from './icons.js';
 import { formatNumber } from '../lib/format.js';
@@ -210,17 +210,32 @@ function FigureRow({ label, field, session }: { label: string; field: ExtractedF
 
 export function CashPaymentsCard({
   fields,
+  summary,
   session,
 }: {
   fields: ExtractedField[];
+  summary: ReconciliationSummary;
   session: CorrectionSession;
 }) {
   const view = cashView(fields);
   const totalizer = totalizerField(fields);
   /** Deposits and manual entries: recorded on the report, but not subtracted in the variance. */
   const recorded = [...view.deposits, ...view.adjustments];
+  /**
+   * The total sales, for the report that itemises them instead of printing them.
+   *
+   * The real Petronite layout prints no totalizer line at all, so there is no such field to put
+   * on a row and nothing here for a manager to correct — the total is the sum of the sales rows
+   * above it, worked out by the server on every read. It is shown for the opposite reason: those
+   * rows are the only thing the figure can be checked against, and a screen whose headline number
+   * is the difference of a total you cannot see is a screen you have to take on trust.
+   *
+   * A stored totalizer field exists only on the older layout, where the report prints one; the
+   * two shapes are exclusive by construction, so this never doubles up with the row below.
+   */
+  const derivedTotal = totalizer === null && view.sales.length > 0 ? summary.pumpTotalizerSales : null;
   /** Every figure this card shows, which is every figure it may sign off in one go. */
-  const shown = [view.cash, ...view.mobile, ...recorded, totalizer].filter(
+  const shown = [view.cash, ...view.mobile, ...view.sales, ...recorded, totalizer].filter(
     (field): field is ExtractedField => field !== null
   );
 
@@ -235,6 +250,14 @@ export function CashPaymentsCard({
       <FigureRow label="Cash collected" field={view.cash} session={session} />
 
       {view.mobile.map((field) => (
+        <FigureRow key={field.id} label={field.label} field={field} session={session} />
+      ))}
+
+      {view.sales.length > 0 && (
+        <SubHeading>What the shift sold — added up into the total below</SubHeading>
+      )}
+
+      {view.sales.map((field) => (
         <FigureRow key={field.id} label={field.label} field={field} session={session} />
       ))}
 
@@ -261,6 +284,28 @@ export function CashPaymentsCard({
             <FieldValue field={totalizer} session={session} format={formatNumber} />
           </div>
           <RowFlags fields={[totalizer]} />
+        </Row>
+      )}
+
+      {/* Derived, so there is no pencil and no "Accept": the figures to correct are the sales
+          rows above, and this moves with them the moment one is corrected. */}
+      {derivedTotal !== null && (
+        <Row>
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-body">Pump totalizer sales</p>
+              <p className="mt-0.5 text-xs text-muted">
+                What the shift sold, not what it took in — the figure the variance subtracts the
+                payments above from, which is why it is not counted in the total. This report
+                prints no total of its own, so this is the sales above and the credit sales beside
+                them, added up. There is nothing to correct here; correcting one of the product
+                figures above moves this.
+              </p>
+            </div>
+            <p className="font-mono text-sm font-semibold tabular-nums text-body">
+              {formatNumber(derivedTotal)}
+            </p>
+          </div>
         </Row>
       )}
 

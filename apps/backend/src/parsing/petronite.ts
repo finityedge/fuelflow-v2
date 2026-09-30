@@ -28,13 +28,32 @@ import type {
   TemplateDiagnostics,
 } from './types.js';
 
-/** Phrases that identify a Petronite shift report. Several must be present to accept a document. */
+/**
+ * Phrases that identify a Petronite shift report. Several must be present to accept a document.
+ *
+ * The list was rebuilt around a real report rather than around the product spec, and the older
+ * entries are kept because they are still printed — a Petronite export that carries a
+ * `TOTALIZER SALES` line is a Petronite export whether or not it also carries a `Cash Position`
+ * block. The additions are the headings the real document prints: `Pump Sales`,
+ * `Stock Movement By Tank`, `Attendant Collection`, `Cash Position`.
+ *
+ * `ATTENDANT` is the one entry that is deliberately loose, and it is loose on purpose rather
+ * than by oversight: it is a column heading on two unrelated tables of the real report
+ * (`… Order Type Shift Attendant`), so it proves very little alone. It is kept because the
+ * smallest attendant-only reports the suite builds reach exactly three markers and this is one
+ * of them. What it costs is bounded by the threshold — three markers — and by nothing else in
+ * this file treating the bare word as a section heading. See `SECTION_HEADERS`.
+ */
 export const TEMPLATE_MARKERS: { name: string; pattern: RegExp }[] = [
   { name: 'PETRONITE', pattern: /\bPETRONITE\b/i },
   { name: 'SHIFT REPORT', pattern: /\bSHIFT\s+REPORT\b/i },
-  { name: 'TOTALIZER', pattern: /\bTOTALIZER\b/i },
-  { name: 'TANK DIP', pattern: /\b(DIP|TANK\s*DIP|DIPPING)\b/i },
-  { name: 'ATTENDANT', pattern: /\bATTENDANT/i },
+  { name: 'TOTALIZER', pattern: /\bTOTALIZERS?\b/i },
+  { name: 'TANK DIP', pattern: /\b(?:TANK\s*DIP|DIPPING)\b/i },
+  { name: 'STOCK MOVEMENT', pattern: /\bSTOCK\s+MOVEMENT\s+BY\s+(?:TANK|PRODUCT)\b/i },
+  { name: 'ATTENDANT', pattern: /\bATTENDANTS?\b/i },
+  { name: 'ATTENDANT COLLECTION', pattern: /\bATTENDANT\s+COLLECTION\b/i },
+  { name: 'PUMP SALES', pattern: /\bPUMP\s+SALES\b/i },
+  { name: 'CASH POSITION', pattern: /\bCASH\s+POSITION\b/i },
   { name: 'RECONCILIATION', pattern: /\bRECONCILIATION\b/i },
   { name: 'MOBILE MONEY', pattern: /\b(M-?PESA|TIGO\s*PESA|AIRTEL\s*MONEY|MOBILE\s*MONEY)\b/i },
   { name: 'CURRENCY TZS', pattern: /\bTZS\b/i },
@@ -74,13 +93,38 @@ const SCALAR_SPECS: ScalarSpec[] = [
     fieldName: 'cash_collected',
     label: 'Cash Collected',
     group: 'CASH_PAYMENTS',
-    patterns: [/\bCASH\s+(?:COLLECTED|RECEIVED|SALES)\b/i, /\bCASH\b(?!\s*BACK)/i],
+    /*
+     * `AMOUNT COLLECTED` comes first because the real report's cash position block prints both
+     * it and `AMOUNT TO BE COLLECTED` on consecutive lines, and the looser `CASH …` patterns
+     * below would otherwise reach the `Cash Sales` column heading on the pump table long before
+     * either. Patterns are tried over the whole document in order (see `readScalar`), so the
+     * order of this list is the difference between reading 4,040,200 and reading nothing.
+     *
+     * It is anchored to the start of the line for the same reason the section headings are: the
+     * attendant table prints `… Amount To Collect  Amount Collected  Loss/Gain` as a column
+     * heading thirty lines above the label it belongs to, and the unanchored form matched that
+     * heading first. `CASH COLLECTED` below stays unanchored because the older layout prints it
+     * behind dot leaders, which an anchor would reject.
+     */
+    patterns: [
+      /^AMOUNT\s+COLLECTED\b/i,
+      /\bCASH\s+(?:COLLECTED|RECEIVED|SALES)\b/i,
+      /\bCASH\b(?!\s*BACK)/i,
+    ],
   },
   {
     fieldName: 'bank_deposit_total',
     label: 'Bank Deposits',
     group: 'CASH_PAYMENTS',
-    patterns: [/\bBANK\s+DEPOSITS?\b/i, /\bDEPOSITS?\b/i],
+    /*
+     * The real report has no `BANK DEPOSIT` label. It prints the account and the money under a
+     * `CASH TO BE BANKED` line: `NMB-<account>   160,000.00`. The middle pattern reads that by
+     * its shape — a bank's short name, an account number, then the figure — because the account
+     * number is the only thing on the line that says what it is. It is unanchored from any
+     * label, so it is third in a list rather than first, and it requires four or more digits so
+     * that a product row (`AGO - DIESEL 45,183.204 …`) cannot be read as a bank account.
+     */
+    patterns: [/\bBANK\s+DEPOSITS?\b/i, /^[A-Z]{2,8}[-\s]\d{4,}\b/, /\bDEPOSITS?\b/i],
   },
 ];
 
@@ -103,12 +147,39 @@ const MOBILE_MONEY_PROVIDERS: { key: string; label: string; pattern: RegExp }[] 
   { key: 'AIRTEL_MONEY', label: 'Airtel Money', pattern: /\bAIRTEL\s*MONEY\b/i },
 ];
 
-/** Section headers that open an itemised block. */
+/**
+ * The headings that open an itemised block, and — by their presence here — the headings that
+ * close the block before them.
+ *
+ * Every entry is anchored to the start of the line, and the anchoring is load-bearing rather
+ * than tidiness. On a real report these words also appear as *column headings* on tables that
+ * have nothing to do with the block named: `Shift Attendant` is printed above the Product &
+ * Services tables, thirty lines before the `Attendant Collection` block, and `Returned To Tank
+ * (RTT)` is printed above the pump test. An unanchored `/\bATTENDANTS?\b/` opened the attendant
+ * block at that column heading; the block then ran until something else closed it and took the
+ * Cash Sales product table as its rows, filing `AGO - DIESEL` and `PMS / MSP - PETROL` as
+ * attendants' names — with their litres sold as the expected collection, their unit price as
+ * the amount collected, and their money as a variance. It was high confidence and unflagged,
+ * and the three people who actually appear on the report were never read at all.
+ *
+ * A heading only ever opens a block when the whole line is that heading (`PUMP SALES`), never
+ * when it merely contains the words (`… Pump Side Price Amount`). That is the rule this
+ * anchoring states, and it is what makes the block boundaries trustworthy enough to derive
+ * money figures from.
+ */
 const SECTION_HEADERS = {
-  credit: /\bCREDIT\s*(?:SALES?)?\b/i,
-  attendant: /\bATTENDANTS?\b/i,
-  tank: /\b(TANKS?|DIP|DIPPING)\b/i,
-  adjustments: /\b(DISCOUNTS?|EXPENSES?|ADJUSTMENTS?|WRITE\s*-?\s*OFFS?)\b/i,
+  pumpSales: /^PUMP\s+SALES\b/i,
+  pumpTest: /^PUMP\s+TEST\b/i,
+  credit: /^(?:NOZZLE\s+)?CREDIT\s+SALES\b/i,
+  loyalty: /^LOYALTY\s+SALES\b/i,
+  directSales: /^PRODUCTS?\s*&\s*SERVICES\b/i,
+  cashSales: /^CASH\s+SALES\b/i,
+  adjustments: /^(?:EXPENDITURES?|DISCOUNTS?|EXPENSES?|ADJUSTMENTS?|WRITE\s*-?\s*OFFS?)\b/i,
+  tank: /^(?:TANK\s*DIP|TANKS?)\b|^STOCK\s+MOVEMENT\s+BY\s+TANK\b/i,
+  tankProduct: /^STOCK\s+MOVEMENT\s+BY\s+PRODUCT\b/i,
+  fuelReceived: /^FUEL\s+RECEIVED\b/i,
+  attendant: /^(?:ATTENDANT\s+COLLECTION|ATTENDANTS?)\b/i,
+  cashPosition: /^CASH\s+POSITION\b/i,
 };
 
 /**
@@ -123,17 +194,35 @@ const SECTION_HEADERS = {
  *
  * `adjustments` is in this list for the same reason in reverse: a discount row contains the
  * word that identifies it, so matching on the row also tells us where the previous section
- * had to have finished.
+ * had to have finished. That is also why `EXPENDITURES` and `DISCOUNTS` are one entry and not
+ * two — the real report titles its expense block `Expenditures` and prints the expense itself
+ * as `Discounts & Bonuses …`, and two entries would have let the block's own first data row
+ * close the block that contains it.
+ *
+ * The last three are unanchored legacy headings kept for reports already on file. They are
+ * safe unanchored because none of the words is a column heading on any report seen so far.
  */
 const SECTION_BOUNDARIES: RegExp[] = [
-  SECTION_HEADERS.credit,
-  SECTION_HEADERS.attendant,
-  SECTION_HEADERS.tank,
-  SECTION_HEADERS.adjustments,
+  ...Object.values(SECTION_HEADERS),
   /\bMOBILE\s+MONEY\b/i,
   /\bRECONCILIATION\b/i,
   /\b(TOTALIZER|BANK\s+DEPOSITS?|CASH\s+COLLECTED)\b/i,
 ];
+
+/**
+ * A printed block total: `Total 4,040,308.14`, or `Total 200 27 TZS 905,359.00`.
+ *
+ * Read as a row it invents a record. On the real report the attendant block closes with
+ * `Total 0 4,040,308.14 4,040,200.00 -108.14`, which became an attendant named `TOTAL` owed
+ * four million shillings, and the expenditures block's total became a second copy of the
+ * expense printed above it, doubling the station's recorded expenses.
+ *
+ * Every row parser skips these, because on every layout seen the total is a sum of the rows
+ * immediately above it and never a row of its own.
+ */
+function isSectionTotalRow(flat: string): boolean {
+  return /^(?:SUB\s*-?\s*|GRAND\s+)?TOTAL\b/i.test(flat);
+}
 
 /**
  * The boundaries that should close a section opened by `header`, which is every boundary
@@ -359,14 +448,84 @@ function stripLeadingAttendantIndex(text: string): string {
   return text.replace(/^(?:NO\.?\s*)?\d{1,2}\b[\s.:-]*/i, '');
 }
 
+/**
+ * `OILCOM T LTD MC863FJY 12 PUMP 1 - PUMP 2 - S1 3,917.00 47,004.00`
+ *
+ * The column layout in front of the figures — customer, then the vehicle — read by its own
+ * shape rather than by a plate pattern.
+ *
+ * `PLATE_PATTERN` reads the older layout, where the plate is the only thing on the row that
+ * looks like one. It cannot read this one: `SU45107` has five digits and no trailing letters,
+ * and `T303EQU` has letters after the digits, so the pattern matches neither, and the two
+ * rows that *do* match it are matched by accident. What does hold on both rows is the column
+ * order: the vehicle is the last word before the first figure that is wholly a number, which
+ * is the quantity column. Everything before it is the customer's name.
+ */
+function readVehicleColumns(flat: string): { vehicle: string; customer: string } | null {
+  const tokens = flat.split(/\s+/);
+  const firstFigure = tokens.findIndex((token) => /^\d[\d,]*(?:\.\d+)?$/.test(token));
+  if (firstFigure < 1) {
+    return null;
+  }
+
+  const vehicle = tokens[firstFigure - 1].replace(/[^\w-]/g, '');
+  if (!vehicle || !/[A-Za-z]/.test(vehicle)) {
+    return null;
+  }
+
+  return { vehicle, customer: tokens.slice(0, firstFigure - 1).join(' ') };
+}
+
 function parseCreditSales(lines: Line[], range: { start: number; end: number }): ParsedField[] {
   const fields: ParsedField[] = [];
   let unidentified = 0;
+
+  /*
+   * Which of the two layouts this block is in is decided by the block's own column heading,
+   * not by the shape of a row. The heading is the report telling us what its columns are, and
+   * it is the only place that says so; guessing from a row means a row that does not fit gets
+   * read as if it did.
+   */
+  const nozzleLayout = lines
+    .slice(range.start, range.end)
+    .some((line) => /\bTRUCK\s+NUMBER\b/i.test(line.flat));
 
   for (let i = range.start; i < range.end; i += 1) {
     const line = lines[i];
     if (line.consumed || !hasDigit(line.flat) || line.flat.length < 3 || isManualAdjustmentRow(line.flat)) {
       continue;
+    }
+    if (isSectionTotalRow(line.flat)) {
+      continue;
+    }
+
+    if (nozzleLayout) {
+      /*
+       * The money is the *last* figure on the row. The columns before it are the quantity and
+       * the unit price, and the pump names carry digits of their own (`PUMP 1 - PUMP 2 - S1`),
+       * so taking the first figure after the vehicle — which is what the older layout wants —
+       * read the quantity 12 as the amount of a 47,004 shilling sale.
+       */
+      const columns = readVehicleColumns(line.flat);
+      const amount = findAmounts(line.flat).at(-1);
+      if (columns && amount) {
+        line.consumed = true;
+        const plate = slugify(columns.vehicle);
+        fields.push(
+          makeField({
+            fieldName: `credit_sale:${plate}`,
+            label: `Credit sale - ${columns.vehicle.toUpperCase()}`,
+            group: 'CREDIT_SALES',
+            rawValue: amount.raw,
+            parsedValue: String(amount.amount),
+            amount: amount.amount,
+            confidence: 'HIGH',
+            needsReview: false,
+            regionText: line.text,
+          })
+        );
+        continue;
+      }
     }
 
     const plateMatch = PLATE_PATTERN.exec(line.flat.toUpperCase());
@@ -416,6 +575,57 @@ function parseCreditSales(lines: Line[], range: { start: number; end: number }):
   return fields;
 }
 
+/**
+ * The `Cash Sales` block: one row per product, with the litres sold, the unit price and the
+ * money taken over the counter for that product.
+ *
+ * The older layout has no such block; its totalizer figure covers the same money in one line.
+ * Both are read where they appear, and `deriveTotalizer` below uses the itemised rows when the
+ * totalizer line is absent.
+ */
+function parseCashSalesRows(lines: Line[], range: { start: number; end: number }): ParsedField[] {
+  const fields: ParsedField[] = [];
+
+  for (let i = range.start; i < range.end; i += 1) {
+    const line = lines[i];
+    if (line.consumed || !hasDigit(line.flat) || isSectionTotalRow(line.flat)) {
+      continue;
+    }
+
+    const amounts = findAmounts(line.flat);
+    // Litres and money at minimum. A row with one figure is a label with a number in it, not a
+    // product line, and there is no column it could be trusted to be.
+    if (amounts.length < 2) {
+      continue;
+    }
+
+    const nameMatch = /^([A-Za-z][A-Za-z0-9 &./'-]*?)\s+\d/.exec(line.flat);
+    if (!nameMatch) {
+      continue;
+    }
+
+    line.consumed = true;
+    const product = nameMatch[1].trim();
+    const amount = amounts[amounts.length - 1];
+
+    fields.push(
+      makeField({
+        fieldName: `cash_sales:${slugify(product)}`,
+        label: `Cash sales - ${product}`,
+        group: 'CASH_PAYMENTS',
+        rawValue: amount.raw,
+        parsedValue: String(amount.amount),
+        amount: amount.amount,
+        confidence: 'HIGH',
+        needsReview: false,
+        regionText: line.text,
+      })
+    );
+  }
+
+  return fields;
+}
+
 function parseAttendantRows(lines: Line[], range: { start: number; end: number }): ParsedField[] {
   const fields: ParsedField[] = [];
 
@@ -428,9 +638,37 @@ function parseAttendantRows(lines: Line[], range: { start: number; end: number }
    */
   let rowCount = 0;
 
+  /*
+   * The real report's attendant block prints one column more than the older layout. Between the
+   * name and `Amount To Collect` sits `Amount Spent`:
+   *
+   *   Attendant Name | Collection Shift | Amount Spent | Amount To Collect | Amount Collected | Loss/Gain
+   *
+   * No column is ever blank, so every figure is present and a row reads as four or five
+   * consecutive figures with nothing between them to say which is which. Read positionally as
+   * the older layout reads — first figure owed, second figure collected — that takes the money
+   * an attendant has already spent on the station's behalf as money they owe, and their float as
+   * money they handed in. On this report it turns a 34 shilling shortfall into a 1,510,400
+   * shilling surplus.
+   *
+   * The block's own column heading is what says which layout this is, and it is the only thing
+   * that does. It is read from the heading row rather than inferred from a count of figures,
+   * because a count cannot tell a five-column block from a four-column one whose row happens to
+   * carry an extra number.
+   */
+  const spentColumn = lines
+    .slice(range.start, range.end)
+    .some((line) => /\bAMOUNT\s+TO\s+COLLECT\b/i.test(line.flat));
+
+  /** The shift word the real layout prints as its second column, after the person's name. */
+  const SHIFT_SUFFIX = /\s+(?:DAY|NIGHT)$/i;
+
   for (let i = range.start; i < range.end; i += 1) {
     const line = lines[i];
     if (line.consumed || !hasDigit(line.flat) || isManualAdjustmentRow(line.flat)) {
+      continue;
+    }
+    if (isSectionTotalRow(line.flat)) {
       continue;
     }
 
@@ -443,15 +681,22 @@ function parseAttendantRows(lines: Line[], range: { start: number; end: number }
     const rowText = stripLeadingAttendantIndex(line.flat);
     const nameMatch = /^([A-Za-z][A-Za-z .'-]{2,40}?)(?=\s{2,}|\s+\d)/.exec(rowText);
     // Dot leaders are layout, not part of the name, and the lazy match absorbs them.
-    const name = nameMatch ? nameMatch[1].replace(/[\s.]+$/, '').trim() : null;
-    const amounts = findAmounts(nameMatch ? rowText.slice(nameMatch[0].length) : rowText);
+    const matchedName = nameMatch ? nameMatch[1].replace(/[\s.]+$/, '').trim() : null;
+    // `AMINA MOHAMMED SHARIF DAY` is one person on the day shift, not a person whose surname
+    // is Day. Left on, the shift word would make the same attendant a different key on nights
+    // and would name them wrongly on every screen they appear on.
+    const name = matchedName ? matchedName.replace(SHIFT_SUFFIX, '') : null;
+    const allFigures = findAmounts(nameMatch ? rowText.slice(nameMatch[0].length) : rowText);
+    // Drop the spent column, if this block has one, so what is left is the same pair of
+    // reconcile figures the older layout prints.
+    const figures = spentColumn ? allFigures.slice(1) : allFigures;
 
     line.consumed = true;
     rowCount += 1;
     const slug = name ? slugify(name) : `attendant_${rowCount}`;
     const label = name ?? 'Attendant';
 
-    if (amounts.length < 2) {
+    if (figures.length < 2) {
       /*
        * A row whose two figures could not be told apart, written as the two fields it should have
        * — both empty, both flagged — rather than as one row-level flag.
@@ -473,7 +718,7 @@ function parseAttendantRows(lines: Line[], range: { start: number; end: number }
        * themselves.
        */
       const note =
-        amounts.length === 1
+        figures.length === 1
           ? 'One figure was read on this row, but not which column it belongs to. Type both figures in from the paper report.'
           : 'No figure could be read on this row. Type both figures in from the paper report.';
 
@@ -506,53 +751,103 @@ function parseAttendantRows(lines: Line[], range: { start: number; end: number }
       continue;
     }
 
-    const expected = amounts[0].amount;
-    const collected = amounts[1].amount;
-    const variance = amounts[2]?.amount ?? expected - collected;
+    const expected = figures[0].amount;
+    const collected = figures[1].amount;
+
+    /*
+     * The report's `Loss/Gain` column is `collected − expected`, the negation of this product's
+     * variance (`computeSummary`: a positive variance is money the station cannot account for).
+     * Copying the printed figure would show a shortfall as a surplus in the one column a manager
+     * reads first, so the variance is derived from the two figures that were read — the same
+     * choice `tankVariance` makes for litres and for the same reason.
+     *
+     * On the older layout there is no loss/gain column to disagree with, and a third figure if
+     * one is printed is already this product's figure.
+     */
+    const variance = spentColumn ? expected - collected : figures[2]?.amount ?? expected - collected;
+    const printedVariance = spentColumn ? figures[2]?.amount : undefined;
+
+    /*
+     * Where the block prints its own loss/gain, it is a check on the two figures that were read:
+     * `collected − expected` must equal it, in magnitude and sign. If it does not, a column has
+     * been misread — most likely a blank cell on one row shifting everything after it left by
+     * one — and the row is flagged rather than stored, because every figure in it is then in
+     * doubt and a manager has the paper in front of them.
+     */
+    const columnsDisagree =
+      printedVariance !== undefined && Math.abs(collected - expected - printedVariance) > 0.01;
+    const disagreementNote =
+      'The loss/gain printed for this attendant does not match the figures read on the row. Check all the figures on this line against the paper report.';
 
     fields.push(
       makeField({
         fieldName: `attendant:${slug}:expected`,
         label: `${label} - to collect`,
         group: 'ATTENDANT_RECONCILIATION',
-        rawValue: amounts[0].raw,
+        rawValue: figures[0].raw,
         parsedValue: String(expected),
         amount: expected,
         confidence: 'HIGH',
-        needsReview: false,
+        needsReview: columnsDisagree,
+        reviewNote: columnsDisagree ? disagreementNote : null,
         regionText: line.text,
       }),
       makeField({
         fieldName: `attendant:${slug}:collected`,
         label: `${label} - collected`,
         group: 'ATTENDANT_RECONCILIATION',
-        rawValue: amounts[1].raw,
+        rawValue: figures[1].raw,
         parsedValue: String(collected),
         amount: collected,
         confidence: 'HIGH',
-        needsReview: false,
+        needsReview: columnsDisagree,
+        reviewNote: columnsDisagree ? disagreementNote : null,
         regionText: line.text,
       }),
       makeField({
         fieldName: `attendant:${slug}:variance`,
         label: `${label} - variance`,
         group: 'ATTENDANT_RECONCILIATION',
-        rawValue: amounts[2]?.raw ?? null,
+        // The printed loss/gain is deliberately not carried as `rawValue`: it is the negation
+        // of the figure stored beside it, and a reviewer comparing the two on screen would read
+        // a sign the product does not mean.
+        rawValue: spentColumn ? null : figures[2]?.raw ?? null,
         parsedValue: String(variance),
         amount: variance,
-        confidence: amounts[2] ? 'HIGH' : 'LOW',
+        confidence: spentColumn ? 'HIGH' : figures[2] ? 'HIGH' : 'LOW',
         // A variance the report did not print but which follows from the two figures that
         // were read is arithmetic, not a judgement call. Flagging it would put a row in
         // the manager's review queue every single shift and drown the rows that genuinely
         // need a human.
-        needsReview: false,
-        reviewNote: amounts[2] ? null : 'Calculated from the figures shown for this attendant',
+        needsReview: columnsDisagree,
+        reviewNote: columnsDisagree
+          ? disagreementNote
+          : spentColumn || figures[2]
+            ? null
+            : 'Calculated from the figures shown for this attendant',
         regionText: line.text,
       })
     );
   }
 
   return fields;
+}
+
+/**
+ * The tank's name on a Stock Movement row: `AGO 3`, `PMS`, `AGO - DIESEL`.
+ *
+ * The name can end in a number and so can the first column of the table beside it, so the split
+ * cannot be made by looking for the first figure — `AGO 3 954.054 0 …` would come back as the
+ * tank `AGO`. What identifies the boundary is the table itself: seven columns, so eight figures
+ * on a row means the first of them is part of the name.
+ */
+function leadingTankLabel(flat: string, figureCount: number): string {
+  const label = /^([A-Za-z][A-Za-z0-9 ._/-]*?)\s+(?=-?\d)/.exec(flat)?.[1] ?? '';
+  if (figureCount >= 8) {
+    const first = findAmounts(flat)[0];
+    return `${label} ${first.raw}`.trim();
+  }
+  return label.trim();
 }
 
 function parseTankRows(lines: Line[], range: { start: number; end: number }): ParsedField[] {
@@ -563,22 +858,53 @@ function parseTankRows(lines: Line[], range: { start: number; end: number }): Pa
     if (line.consumed || !hasDigit(line.flat) || isManualAdjustmentRow(line.flat)) {
       continue;
     }
+    if (isSectionTotalRow(line.flat)) {
+      continue;
+    }
 
-    const remainder = stripLeadingIndex(line.flat);
+    const allFigures = findAmounts(line.flat);
+
+    /*
+     * The real report's `Stock Movement By Tank` table prints seven figures per row, in this
+     * order:
+     *
+     *   Opening Balance | RTT | Addition | Liters Sold | Book Stock | Closing Dipping | Variance
+     *
+     * The two figures this product stores are the fifth and sixth, so they are read from there.
+     * Read positionally as the older two-figure layout reads them — first figure book stock,
+     * second closing dip — the opening balance was stored as the book stock and the RTT as the
+     * closing dip, which reports a variance of zero for every tank on every shift *and* a book
+     * stock of zero for any tank the report prints as empty. The whole tank-leakage feature then
+     * has nothing true to say, from a report whose own variance column is non-zero.
+     *
+     * `litresSold` (the fourth) is deliberately not stored. It is the same fuel the pump sales
+     * block accounts for in money, and deriving one from the other here would be inventing a
+     * figure the report does not print.
+     */
+    const columns =
+      allFigures.length >= 7
+        ? allFigures.length === 7
+          ? allFigures
+          : allFigures.slice(allFigures.length - 7)
+        : null;
+
     // Read the tank identifier from the identifier rule, not from the start of the line:
     // on `TANK 1 PMS 12,000 11,500` the first token is the literal word "TANK", which
     // would label every tank identically.
-    const tankId = TANK_ID_PATTERN.exec(line.flat)?.[1] ?? String(fields.length / 2 + 1);
-    const amounts = findAmounts(remainder);
+    const remainder = columns ? '' : stripLeadingIndex(line.flat);
+    const legacyFigures = columns ? [] : findAmounts(remainder);
 
-    if (amounts.length === 0) {
+    if (allFigures.length === 0 || (!columns && legacyFigures.length === 0)) {
       continue;
     }
 
     line.consumed = true;
+    const tankId = columns
+      ? leadingTankLabel(line.flat, allFigures.length)
+      : TANK_ID_PATTERN.exec(line.flat)?.[1] ?? String(fields.length / 2 + 1);
     const tankSlug = slugify(tankId);
-    const bookStock = amounts[0];
-    const closingDip = amounts[1];
+    const bookStock = columns ? columns[4] : legacyFigures[0];
+    const closingDip = columns ? columns[5] : legacyFigures[1];
 
     fields.push(
       makeField({
@@ -654,12 +980,21 @@ function parseAdjustments(lines: Line[], range: { start: number; end: number }):
 
   for (let i = range.start; i < range.end; i += 1) {
     const line = lines[i];
-    if (line.consumed || !hasDigit(line.flat)) {
+    if (line.consumed || !hasDigit(line.flat) || isSectionTotalRow(line.flat)) {
       continue;
     }
 
     const keyword = ALWAYS_REVIEW_KEYWORDS.exec(line.flat);
-    const amount = findAmounts(line.flat)[0];
+    /*
+     * The money is the last figure on the row, and on a real report it has to be. The row is
+     *
+     *   Discounts & Bonuses   CASHBACK DISCOUNT LTRS310   15,100.00
+     *
+     * where the trailing `310` is glued to the word in front of it — a litres count, not money,
+     * and there is nothing in the text to say so. Reading the first figure stored 310 shillings
+     * of discount beside a row whose own total says 15,100.
+     */
+    const amount = findAmounts(line.flat).at(-1);
     if (!amount) {
       continue;
     }
@@ -697,10 +1032,16 @@ function parseStrayAdjustments(lines: Line[]): ParsedField[] {
   const fields: ParsedField[] = [];
 
   for (const line of lines) {
-    if (line.consumed || !ALWAYS_REVIEW_KEYWORDS.test(line.flat) || !hasDigit(line.flat)) {
+    if (
+      line.consumed ||
+      !ALWAYS_REVIEW_KEYWORDS.test(line.flat) ||
+      !hasDigit(line.flat) ||
+      isSectionTotalRow(line.flat)
+    ) {
       continue;
     }
-    const amount = findAmounts(line.flat)[0];
+    // Last figure, for the reason given in `parseAdjustments`.
+    const amount = findAmounts(line.flat).at(-1);
     if (!amount) {
       continue;
     }
@@ -850,8 +1191,36 @@ export function computeSummary(fields: SummaryInput[]): ParseSummary {
 
   const scalarAmount = (name: string): number | null => byName.get(name)?.amount ?? null;
 
+  const cashSalesFields = fields.filter(
+    (f) => f.fieldName.startsWith('cash_sales:') && f.amount !== null
+  );
+  const creditFields = fields.filter((f) => f.fieldName.startsWith('credit_sale:') && f.amount !== null);
+
+  /**
+   * The shift's total sales, added up from the blocks that itemise them.
+   *
+   * The real report prints no totalizer line of any kind. What it prints instead is the same
+   * quantity split in two: a `Cash Sales` block carrying the money taken over the counter, and a
+   * `Nozzle Credit Sales` block carrying the money sold on account. Together they are the figure
+   * the older layout labels `TOTALIZER SALES`.
+   *
+   * Derived here, at reading time, rather than by the parser writing a totalizer field of its own
+   * — the same reason the variance and the tank figures are derived. A total added up once at
+   * upload and stored would go on reporting what the parser first saw: a manager who corrects a
+   * product's cash figure would watch the row above it change and the variance below it not move.
+   *
+   * Null when the report has no cash sales block, which is every report in the older layout:
+   * there the totalizer line is printed, read, and correctable in its own right, and this must not
+   * replace it with a sum of whatever happened to be itemised alongside it.
+   */
+  const derivedTotalSales =
+    cashSalesFields.length > 0
+      ? [...cashSalesFields, ...creditFields].reduce((sum, field) => sum + (field.amount ?? 0), 0)
+      : null;
+
   const gradeTotalizers = fields.filter((f) => f.fieldName.startsWith('pump_totalizer_sales:'));
   const pumpTotalizerSales =
+    derivedTotalSales ??
     scalarAmount('pump_totalizer_sales') ??
     (gradeTotalizers.length > 0
       ? gradeTotalizers.reduce((sum, f) => sum + (f.amount ?? 0), 0)
@@ -862,11 +1231,11 @@ export function computeSummary(fields: SummaryInput[]): ParseSummary {
   const mobileFields = fields.filter((f) => f.fieldName.startsWith('mobile_money'));
   const mobileMoney = mobileFields.reduce((sum, f) => sum + (f.amount ?? 0), 0);
 
-  const creditFields = fields.filter((f) => f.fieldName.startsWith('credit_sale:') && f.amount !== null);
   const approvedCredit = creditFields.reduce((sum, f) => sum + (f.amount ?? 0), 0);
 
   const contributors = [
     ...mobileFields,
+    ...cashSalesFields,
     ...creditFields,
     byName.get('pump_totalizer_sales'),
     byName.get('cash_collected'),
@@ -880,6 +1249,20 @@ export function computeSummary(fields: SummaryInput[]): ParseSummary {
       : null;
 
   return { pumpTotalizerSales, cash, mobileMoney, approvedCredit, variance, provisional };
+}
+
+/**
+ * Whether the report itemises its sales instead of printing a total for them.
+ *
+ * The real layout prints no totalizer line. Its label scan therefore lands on the `Total Sales`
+ * column heading of the pump table and leaves a `pump_totalizer_sales` field with no figure in
+ * it, which is worse than leaving it out: the review screen would put a flagged, empty row in
+ * front of a manager and ask for a number the report never printed, while the figure they can
+ * actually check sits in the cash and credit blocks beside it. See `computeSummary`, which
+ * derives the total from those blocks on every read.
+ */
+function itemisesSales(fields: ParsedField[]): boolean {
+  return fields.some((field) => field.fieldName.startsWith('cash_sales:') && field.amount !== null);
 }
 
 function dedupeFieldNames(fields: ParsedField[]): ParsedField[] {
@@ -953,6 +1336,11 @@ export function parseShiftReportText(rawText: string): ParseResult {
     fields.push(...parseTankRows(lines, tankRange));
   }
 
+  const cashSalesRange = findSectionRange(lines, SECTION_HEADERS.cashSales, boundariesExcept(SECTION_HEADERS.cashSales));
+  if (cashSalesRange) {
+    fields.push(...parseCashSalesRows(lines, cashSalesRange));
+  }
+
   const adjustmentRange = findSectionRange(lines, SECTION_HEADERS.adjustments, boundariesExcept(SECTION_HEADERS.adjustments));
   if (adjustmentRange) {
     fields.push(...parseAdjustments(lines, adjustmentRange));
@@ -984,7 +1372,18 @@ export function parseShiftReportText(rawText: string): ParseResult {
 
   fields.push(...parseStrayAdjustments(lines));
 
-  const uniqueFields = dedupeFieldNames(fields);
+  /*
+   * A report that itemises its sales prints no total for them, so the label scan above has left
+   * a flagged, empty `pump_totalizer_sales` behind — it matched the `Total Sales` column heading
+   * on the pump table. Drop it rather than fill it in: the figure is derived from the itemised
+   * blocks on every read (`computeSummary`), and a field holding no value would put a row in
+   * front of a manager asking them to type in a number the report never printed.
+   */
+  const collected = itemisesSales(fields)
+    ? fields.filter((field) => field.fieldName !== 'pump_totalizer_sales')
+    : fields;
+
+  const uniqueFields = dedupeFieldNames(collected);
   const summary = computeSummary(uniqueFields);
 
   const coreReadable = SCALAR_SPECS.slice(0, 2).some((spec) =>

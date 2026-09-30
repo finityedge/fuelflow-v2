@@ -781,7 +781,7 @@ export function ShiftReport() {
                 the figures wrap and the pencil lands somewhere unpredictable. */}
             <div className="grid gap-6 md:grid-cols-2">
               <div id="card-cash" className="scroll-mt-6">
-                <CashPaymentsCard fields={fields} session={session} />
+                <CashPaymentsCard fields={fields} summary={summary} session={session} />
               </div>
               {hasCredit && (
                 <div id="card-credit" className="scroll-mt-6">

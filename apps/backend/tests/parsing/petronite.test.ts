@@ -1,17 +1,27 @@
 /**
  * Parser tests.
  *
- * NOTE ON THE FIXTURES: no real Petronite report was available when these were written.
- * They are synthesised to the structure the product spec describes — totalizer sales,
- * cash, itemised mobile money, credit sales by plate, attendant reconciliation, tank dips,
- * and a manual discount — with the spacing varied between them so the template tolerance
- * is actually exercised. Every figure below is invented. When a real report is available
- * it should be added here as-is, and any assertion it breaks is a genuine finding.
+ * NOTE ON THE FIXTURES: the fixtures below this line were synthesised to the structure the
+ * product spec describes, with the spacing varied between them so the template tolerance is
+ * actually exercised. Every figure in them is invented.
+ *
+ * A real report has since been seen, and the block at the end of this file is about it — but it
+ * is a different layout from the invented ones, not a variation on them (the totalizer line is
+ * absent, the attendant block has an extra column, the tank table has seven figures per row,
+ * and cash sales are itemised per product). The two sets of fixtures are therefore kept
+ * side by side and neither is treated as the template: the invented ones above cover the shapes
+ * the spec describes, and the real one is the shape a station actually prints.
+ *
+ * That real report is not in this file, and not in the repository at all: it is a live station's
+ * figures with the people's real names and a real bank account number on it. It is loaded from a
+ * gitignored sample by `tests/helpers/realReport.ts`, and the block that uses it skips itself on a
+ * checkout that does not have the file.
  */
 
 import { describe, expect, it } from 'vitest';
-import { parseShiftReportText } from '../../src/parsing/petronite.js';
+import { parseShiftReportText, computeSummary } from '../../src/parsing/petronite.js';
 import type { ParsedField } from '../../src/parsing/types.js';
+import { realShiftReportSample, sampleMissing } from '../helpers/realReport.js';
 
 function fieldOf(fields: ParsedField[], fieldName: string): ParsedField | undefined {
   return fields.find((field) => field.fieldName === fieldName);
@@ -491,5 +501,188 @@ describe('parseShiftReportText - wrong document', () => {
     expect(result.failureReason).toMatch(/no text could be read/i);
     expect(result.failureReason).toMatch(/scan or a photograph/i);
     expect(result.fields).toEqual([]);
+  });
+});
+
+/**
+ * The real report.
+ *
+ * Everything above this block was written against invented fixtures, because no real Petronite
+ * report was available. One is now, and it does not have the shape those fixtures have. The
+ * assertions here are what pins the parser to it, and the arithmetic they check is the report's
+ * own: the figures on it agree with each other in three places, so a column read from the wrong
+ * position breaks at least one of them.
+ *
+ * The report itself is not in the repository — it carries real people's names and a real bank
+ * account number — so it is loaded from a gitignored file by `tests/helpers/realReport.ts`, and
+ * this block skips itself where that file is absent. Skipped is the honest outcome: the parser's
+ * fit to the real layout is unverified on such a machine, and a green suite must not imply
+ * otherwise. What a machine with the sample gets is the whole block below.
+ */
+describe.skipIf(sampleMissing)('parseShiftReportText - the real Petronite report', () => {
+  // Parsed from the empty string when the sample is absent. The block is skipped in that case, so
+  // nothing reads it; it is written this way so registering the tests never dereferences a null.
+  const result = parseShiftReportText(realShiftReportSample ?? '');
+
+  it('reads the document as a shift report for its own date', () => {
+    expect(result.diagnostics.matchedMarkers.length).toBeGreaterThanOrEqual(3);
+    expect(result.reportDate).toBe('2026-08-24');
+    expect(result.failureReason).toBeNull();
+  });
+
+  it('reads the three attendants, and no one else', () => {
+    const expected = result.fields.filter((field) => field.fieldName.endsWith(':expected'));
+
+    expect(expected.map((field) => field.fieldName)).toEqual([
+      'attendant:AMINA_MOHAMMED_SHARIF:expected',
+      'attendant:RAHMA_HAMISI:expected',
+      'attendant:ZAINABU_SELEMANI:expected',
+    ]);
+  });
+
+  it('takes the amount to collect as what is owed, not the amount spent beside it', () => {
+    // The row is `AMINA MOHAMMED SHARIF DAY 0 1,510,434.37 1,510,400.00 -34.37`. Read the way
+    // the older three-column layout reads — first figure owed, second collected — the 0 spent
+    // is the money she owes and 1,510,434.37 is what she handed in.
+    expect(fieldOf(result.fields, 'attendant:AMINA_MOHAMMED_SHARIF:expected')?.amount).toBe(1510434.37);
+    expect(fieldOf(result.fields, 'attendant:AMINA_MOHAMMED_SHARIF:collected')?.amount).toBe(1510400);
+  });
+
+  it('drops the shift word from the name, so a person is one key on days and on nights', () => {
+    expect(fieldOf(result.fields, 'attendant:AMINA_MOHAMMED_SHARIF:variance')?.label).toBe(
+      'AMINA MOHAMMED SHARIF - variance'
+    );
+    expect(result.fields.some((field) => field.fieldName.includes('_DAY'))).toBe(false);
+  });
+
+  it('records a shortfall as a shortfall, in this product\'s sign', () => {
+    // The report prints `-34.37` in its own Loss/Gain column for the same fact. Stored as
+    // printed it would read as a surplus on every screen that shows a variance.
+    const variance = fieldOf(result.fields, 'attendant:AMINA_MOHAMMED_SHARIF:variance');
+
+    expect(variance?.amount).toBeCloseTo(34.37, 2);
+    expect(variance?.needsReview).toBe(false);
+  });
+
+  it('does not invent an attendant out of the block total', () => {
+    expect(result.fields.some((field) => field.fieldName.startsWith('attendant:TOTAL'))).toBe(false);
+  });
+
+  it('reads the book stock and closing dip from the middle of the stock movement row', () => {
+    // `AGO 3 954.054 0 0 192.597 761.457 762.162 0.705` — opening balance first, and the
+    // report's own variance of 0.705 at the end. Read positionally as the older two-figure
+    // layout reads them, this tank's book stock is 954.054 and its dip is 0.
+    expect(fieldOf(result.fields, 'tank:AGO_3:book_stock')?.amount).toBe(761.457);
+    expect(fieldOf(result.fields, 'tank:AGO_3:closing_dip')?.amount).toBe(762.162);
+    expect(fieldOf(result.fields, 'tank:AGO_4:book_stock')?.amount).toBe(29182.308);
+    expect(fieldOf(result.fields, 'tank:PMS:book_stock')?.amount).toBe(5447.367);
+  });
+
+  it('keeps the tank number that is part of the tank name', () => {
+    const tanks = result.fields
+      .filter((field) => field.fieldName.endsWith(':book_stock'))
+      .map((field) => field.fieldName.replace('tank:', '').replace(':book_stock', ''));
+
+    expect(tanks).toEqual(['AGO_1', 'AGO_2', 'AGO_3', 'AGO_4', 'PMS']);
+  });
+
+  it('reads a credit sale as its money, not as the quantity in front of the pump names', () => {
+    // `OILCOM T LTD MC863FJY 12 PUMP 1 - PUMP 2 - S1 3,917.00 47,004.00`. The first figure
+    // after the vehicle is the litres; the money is last.
+    expect(fieldOf(result.fields, 'credit_sale:MC863FJY')?.amount).toBe(47004);
+    expect(fieldOf(result.fields, 'credit_sale:T303EQU')?.amount).toBe(799600);
+    expect(
+      result.fields
+        .filter((field) => field.fieldName.startsWith('credit_sale:'))
+        .reduce((sum, field) => sum + (field.amount ?? 0), 0)
+    ).toBeCloseTo(905359, 2);
+  });
+
+  it('does not read the credit block total as a credit sale', () => {
+    expect(result.fields.some((field) => field.fieldName === 'credit_sale:TOTAL')).toBe(false);
+    expect(result.fields.filter((field) => field.fieldName.startsWith('credit_sale:'))).toHaveLength(5);
+  });
+
+  it('reads each product\'s cash takings from the cash sales block', () => {
+    expect(fieldOf(result.fields, 'cash_sales:AGO_DIESEL')?.amount).toBe(2009382.81);
+    expect(fieldOf(result.fields, 'cash_sales:PMS_MSP_PETROL')?.amount).toBe(2030925.33);
+  });
+
+  it('reads cash collected from the cash position line, not the amount still to be collected', () => {
+    expect(fieldOf(result.fields, 'cash_collected')?.amount).toBe(4040200);
+    expect(fieldOf(result.fields, 'cash_collected')?.needsReview).toBe(false);
+  });
+
+  it('reads the bank deposit from the account line', () => {
+    expect(fieldOf(result.fields, 'bank_deposit_total')?.amount).toBe(160000);
+  });
+
+  it('reads the expense once, and its money rather than the litres glued to a word', () => {
+    const adjustments = result.fields.filter((field) => field.fieldName.startsWith('adjustment:'));
+
+    expect(adjustments).toHaveLength(1);
+    expect(adjustments[0].amount).toBe(15100);
+    // `Discounts & Bonuses CASHBACK DISCOUNT LTRS310 15,100.00` — the 310 is litres.
+    expect(adjustments[0].reviewNote).toMatch(/always require review/i);
+  });
+
+  it('adds the total sales up from the blocks that itemise them', () => {
+    // 4,040,308.14 of cash sales + 905,359.00 on credit. The report prints no totalizer line,
+    // so this is derived on every read, and it is the figure the variance is measured against.
+    expect(result.summary.pumpTotalizerSales).toBeCloseTo(4945667.14, 2);
+  });
+
+  it('stores no totalizer field, because a stored derived figure goes stale', () => {
+    // The label scan matches the `Total Sales` column heading, so without dropping it there
+    // would be a flagged, empty row asking a manager for a figure the report never printed.
+    expect(
+      result.fields.filter((field) => field.fieldName.startsWith('pump_totalizer_sales'))
+    ).toHaveLength(0);
+  });
+
+  it('moves the total, and the variance with it, when a product cash figure is corrected', () => {
+    // The reason the total is derived rather than stored. Correcting a component has to reach
+    // the headline number, or a shift corrected from a shortfall to a surplus goes on showing
+    // the shortfall — which is what a stored total would do.
+    const fields = result.fields.map((field) => ({ ...field }));
+    const diesel = fields.find((field) => field.fieldName === 'cash_sales:AGO_DIESEL');
+    expect(diesel?.amount).toBeCloseTo(2009382.81, 2);
+    const before = computeSummary(fields);
+
+    diesel!.amount = 2_000_000;
+    const after = computeSummary(fields);
+
+    expect(before.pumpTotalizerSales! - after.pumpTotalizerSales!).toBeCloseTo(9382.81, 2);
+    expect(after.variance! - before.variance!).toBeCloseTo(-9382.81, 2);
+  });
+
+  it('agrees with the report about how much money is missing', () => {
+    // The report prints `TOTAL ATTENDANT LOSS/GAIN -108.14`, and `AMOUNT TO BE COLLECTED
+    // 4,040,308.14` against `AMOUNT COLLECTED 4,040,200.00`. The variance below is the second
+    // of those facts, arrived at independently: total sales less what was collected and what
+    // is on credit.
+    expect(result.summary.variance).toBeCloseTo(108.14, 2);
+    expect(result.summary.pumpTotalizerSales).toBeCloseTo(4945667.14, 2);
+    expect(result.summary.cash).toBe(4040200);
+    expect(result.summary.approvedCredit).toBeCloseTo(905359, 2);
+  });
+
+  it('ties the total sales to the pump litres valued at their own unit prices', () => {
+    // 702.597 x 3,998.00 + 545.49 x 3,917.00. This is the report's own arithmetic, not the
+    // parser's, and it is the tie that catches a cash sales row read one column off.
+    expect(result.summary.pumpTotalizerSales).toBeCloseTo(702.597 * 3998 + 545.49 * 3917, 2);
+  });
+
+  it('has a complete enough reading to call the summary provisional no longer', () => {
+    expect(result.summary.provisional).toBe(false);
+  });
+
+  it('asks a manager to review the manual entry and nothing else', () => {
+    // The one flagged field is the expense, which is flagged by rule on every report. Every
+    // figure read off the document itself is high confidence and unattended.
+    const flagged = result.fields.filter((field) => field.needsReview);
+
+    expect(flagged.map((field) => field.fieldName)).toEqual(['adjustment:CASHBACK_1']);
+    expect(result.status).toBe('NEEDS_REVIEW');
   });
 });
