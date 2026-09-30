@@ -65,12 +65,93 @@ they come before any feature work.
 |------|--------|----------------------------|
 | Upload endpoint (PDF-only, size-capped, magic-byte checked, 202 + background parse) | **DONE** | `routes/shiftReports.ts:90`, `:82`; limit `schemas/shiftReport.schema.ts:42` (15 MB). |
 | Background job processing (BullMQ) | **DONE** | `jobs/queues.ts`, `jobs/processors/pdfProcessor.ts`, `src/worker.ts`; 3 attempts, exponential backoff. |
-| Deterministic Petronite parser | **PARTIAL** | `parsing/petronite.ts` — template markers with a 3-marker threshold (`:32,:44`), section extraction for credit / attendant / tank / adjustments / mobile money, scalar cash + bank deposit + totalizer, date reading, reconciliation arithmetic. **Real-PDF coverage now runs in CI** — see the CI row under "Fixed in passing": the suite drives genuine PDFs through pdfjs and our y-coordinate line reconstruction, not stubbed text. **Open:** (a) **no OCR.** A scan cannot be read, and that is now stated as a limitation instead of hedged — the failure names both causes and the action for each, because calling a good scan "possibly corrupted" sent managers to re-export a file that was never broken. Two tests cover it, including `buildImageOnlyPdf()` (a valid, ink-bearing PDF with no text layer). (b) Only the Petronite template is supported, and **no real Petronite report has ever been seen** — fixtures are invented to the spec's structure, so this proves the machinery, not the template match. (c) Template coverage cannot advance without a real sample. (d) ~~An unreadable attendant row is a flag nothing can clear~~ — **fixed**: a row whose two figures cannot be told apart is now written as those two figures, empty and both flagged (`parsing/petronite.ts:454`), instead of as one `attendant:<slug>:row` flag. The review screen's ordinary correction control fills them in, so the row can be settled and the report leaves the queue; before, the flag had no control that could clear it and the report sat in NEEDS_REVIEW for good. Nothing is guessed at in the meantime — both figures stay null, the variance stays unknown, and the row is still left out of the card's totals while the person's profile counts the shift as one that cannot be compared rather than one that was never worked (`shiftsNotComparable`, never a zero) — and the one figure the parser *did* find is deliberately not filed under either column, since which column it belongs to is the thing that could not be read. The nameless-row key was fixed in the same pass: it was `fields.length / 3 + 1`, which a two-field row made fractional. Tests: `tests/parsing/petronite.test.ts` ("an unreadable attendant row", 6), `tests/parsing/attendantVariance.test.ts` (both shapes), `tests/shiftReports.integration.test.ts` ("an unreadable attendant row"). Legacy rows — reports parsed before the change — still take the old shape; the card says so and points at re-parsing, which now rewrites the row into the two fillable fields. |
+| Deterministic Petronite parser | **PARTIAL** | `parsing/petronite.ts` — template markers with a 3-marker threshold (`:32,:44`), section extraction for credit / attendant / tank / adjustments / mobile money, scalar cash + bank deposit + totalizer, date reading, reconciliation arithmetic. **Real-PDF coverage now runs in CI** — see the CI row under "Fixed in passing": the suite drives genuine PDFs through pdfjs and our y-coordinate line reconstruction, not stubbed text. **Open:** (a) **no OCR.** A scan cannot be read, and that is now stated as a limitation instead of hedged — the failure names both causes and the action for each, because calling a good scan "possibly corrupted" sent managers to re-export a file that was never broken. Two tests cover it, including `buildImageOnlyPdf()` (a valid, ink-bearing PDF with no text layer). (b) Only the Petronite template is supported. **A real Petronite report has now been seen, and it does not match this template** — the sample is `ASAMOIL KISEMVULE-DAY-24_08_2026 (1).pdf` in the repository root, and what it does to the parser is written up under "The real report, and what it does to this template" below. The fixtures remain invented to the spec's structure, so the suite still proves the machinery and not the template match. (c) Template coverage can no longer advance by writing more fixtures — it needs a decision about what the template *is*, which is a human's to make, not a patch to be made quietly. (d) ~~An unreadable attendant row is a flag nothing can clear~~ — **fixed**: a row whose two figures cannot be told apart is now written as those two figures, empty and both flagged (`parsing/petronite.ts:454`), instead of as one `attendant:<slug>:row` flag. The review screen's ordinary correction control fills them in, so the row can be settled and the report leaves the queue; before, the flag had no control that could clear it and the report sat in NEEDS_REVIEW for good. Nothing is guessed at in the meantime — both figures stay null, the variance stays unknown, and the row is still left out of the card's totals while the person's profile counts the shift as one that cannot be compared rather than one that was never worked (`shiftsNotComparable`, never a zero) — and the one figure the parser *did* find is deliberately not filed under either column, since which column it belongs to is the thing that could not be read. The nameless-row key was fixed in the same pass: it was `fields.length / 3 + 1`, which a two-field row made fractional. Tests: `tests/parsing/petronite.test.ts` ("an unreadable attendant row", 6), `tests/parsing/attendantVariance.test.ts` (both shapes), `tests/shiftReports.integration.test.ts` ("an unreadable attendant row"). Legacy rows — reports parsed before the change — still take the old shape; the card says so and points at re-parsing, which now rewrites the row into the two fillable fields. |
 | Field-level review & correction | **DONE** | `PATCH /shift-reports/:id/fields/:fieldId` (`shiftReports.ts:182`); `correctExtractedField` (`services/shiftReport.service.ts:337`) clears the review flag and stamps `correctedAt`/`correctedBy`/`correctionNote`; review UI in `pages/ShiftReport.tsx` + `components/FieldValue.tsx`, `components/ReportGroupCards.tsx`. |
 | Status recomputation after review | **DONE** | `refreshReportStatus` (`service.ts:152`) moves NEEDS_REVIEW → PARSED as flags clear. Recompute-from-fields is enforced for the variance (`computeSummary` reused at `:185`). |
 | Retry / re-parse path | **DONE** | `POST /shift-reports/:id/reparse` (`shiftReports.ts:262`); UI button in `pages/ShiftReport.tsx`. |
 | Reviewer rationale capture | **DONE** | `ExtractedField.correctionNote` (migration `20260930115656_reviewer_correction_note`); optional `note` on `correctFieldBodySchema` (`schemas/shiftReport.schema.ts`), persisted in `correctExtractedField` (`services/shiftReport.service.ts:337`), returned by `serializeField` and carried on the shared `ExtractedField` type. The review screen asks for it in the correction form and reads it back under the row (`components/FieldValue.tsx`). Optional by design — the common fix needs no prose — and the field is single-slot like `correctedAt`/`correctedBy`, so a later correction replaces the earlier rationale rather than accumulating a history (documented at the write site; a real revision log is a larger feature and is not pretended to here). Test: `tests/shiftReports.integration.test.ts` ("keeps the reviewer's reason alongside the correction"). |
 | Bulk review / next-unreviewed flow | **DONE** | Two halves, both built. **Bulk accept:** `POST /shift-reports/:id/fields/accept` (`routes/shiftReports.ts:227`) over `acceptExtractedFields` (`services/shiftReport.service.ts`) settles many flagged figures in one atomic transaction, each keeping the value it has. Accepting is recorded distinctly from correcting — `ExtractedField.reviewAction` (`FieldReviewAction`, migration `20260930170750_field_review_action`), `ACCEPTED` vs `CORRECTED` — because a reviewer who reads the paper and leaves the number alone has not corrected anything, and "the figure was never touched" is exactly what an owner asks when a variance disappears after review. The service refuses per id and says which (`not_found` / `not_flagged` / `nothing_read`), so an empty row can never have its flag cleared; a batch that settles nothing because every id belongs elsewhere is a 404, while "already checked" is a 200 that names it. Per-card "Accept all N remaining" and a per-row "Accept" in `components/ReportGroupCards.tsx` / `FieldValue.tsx`. **Walk-through:** a "next flagged figure" step in `pages/ShiftReport.tsx` scans forward with wrap, scrolls the figure into view and rings it, with a "N of M flagged figures checked" line. Tests: `tests/shiftReports.routes.test.ts` (11, access and refusal shapes), `tests/shiftReports.integration.test.ts` ("accepting a flagged field", 9). **One flag this flow could not clear, now cleared:** an unreadable attendant row used to be a whole-row flag with nothing to accept and no control to clear it, so a report carrying one never left NEEDS_REVIEW — and re-parsing could not help, because the same ambiguous line was unreadable every time. The parser now writes such a row as its two figures, empty and both flagged, which the correction control fills in; see the parser row's open item (d). Reports parsed before that change can be re-parsed from the review screen to get the same fillable fields. |
+
+### The real report, and what it does to this template
+
+A real Petronite shift report arrived in the repository — `ASAMOIL KISEMVULE-DAY-24_08_2026 (1).pdf`,
+a genuine two-page iText 2.1.7 export with a real text layer. It was pushed through the genuine
+pipeline rather than a unit test: `POST /api/shift-reports/upload` → the BullMQ worker →
+`parseShiftReportText` → `ExtractedField` rows, then read back from `GET /api/shift-reports/:id`.
+**It does not match the template, and the mismatch is structural.** It is reported here and not
+patched, because what to do about it is a coverage decision rather than a bug to fix quietly.
+
+**The gate passes anyway.** `matchedMarkers` = PETRONITE, SHIFT REPORT, TANK DIP, ATTENDANT,
+CURRENCY TZS (5 of 8); missing = TOTALIZER, RECONCILIATION, MOBILE MONEY. The 3-marker threshold
+(`parsing/petronite.ts:44`, patterns at `:32-41`) is cleared, so the document is *accepted* — and
+two of the five hits are false positives. `TANK DIP` matches the word **"Dipping" in a column
+header**, and `ATTENDANT` matches a column header on two unrelated tables (`… Order Type Shift
+Attendant`). Nothing the parser then goes looking for is on the document.
+
+**Every section is different.** The report's own sections are Pump Sales, Pump Test, Nozzle Credit
+Sales, Loyalty Sales, Product & Services Credit/Cash Sales, Cash Sales, Expenditures, Stock
+Movement By Tank / By Product, Fuel Received, Attendant Collection and Cash Position. There is no
+TOTALIZER, no RECONCILIATION and no MOBILE MONEY. Against `SECTION_HEADERS`
+(`parsing/petronite.ts:107-112`) and the scalar reads, what the pipeline actually stored was:
+
+| Assumed | What the report has | What came out |
+|---|---|---|
+| a `CREDIT SALES` block | "Nozzle Credit Sales" / "Product & Services Credit Sales" | 12 invented `credit_sale:unidentified_1..12` scraped from the **Pump Sales** table columns (`3, 2, 3, 5, 502.597, … , 518.49`); `summary.approvedCredit = 1049.087` |
+| `ATTENDANTS?` opens the attendant block | "Attendant Collection"; the word "Attendant" first appears as a **column header** at text line 36 | the block opens 30 lines early and closes on the wrong table — see below |
+| `TANKS?\|DIP\|DIPPING` | "Stock Movement By Tank", rows shaped `AGO 1 14,536.842 …` | **zero** `TANK_READINGS` fields; Module 3 is inert on real data |
+| TOTALIZER / CASH COLLECTED / BANK DEPOSITS scalars | "AMOUNT COLLECTED" under Cash Position, "CASH TO BE BANKED", "NMB-12170745" | `pump_totalizer_sales`, `cash_collected`, `bank_deposit_total` all null |
+| an expenses/discounts block | Expenditures | the 15,100 recorded **twice** — `adjustment:ADJUSTMENT_2` *and* `adjustment:EXPENSE_1` — plus a spurious 310 from `CASHBACK DISCOUNT LTRS310` |
+
+**The one that matters most, because it is not flagged.** The attendant rows the pipeline stored are
+`AGO_DIESEL` and `attendant_2`:
+
+```
+ATTENDANT_RECONCILIATION  attendant:AGO_DIESEL:expected    502.597       needsReview=false
+ATTENDANT_RECONCILIATION  attendant:AGO_DIESEL:collected   3,998.00      needsReview=false
+ATTENDANT_RECONCILIATION  attendant:AGO_DIESEL:variance    2,009,382.81  needsReview=false
+ATTENDANT_RECONCILIATION  attendant:attendant_2:expected   518.49        needsReview=false
+ATTENDANT_RECONCILIATION  attendant:attendant_2:collected  3,917.00      needsReview=false
+ATTENDANT_RECONCILIATION  attendant:attendant_2:variance   2,030,925.33  needsReview=false
+```
+
+Their source is the **Cash Sales product table** —
+
+```
+AGO - DIESEL      502.597   3,998.00   2,009,382.81
+PMS / MSP - PETROL 518.49  3,917.00   2,030,925.33
+```
+
+— read as one attendant per product, with quantity, unit price and amount standing in for expected,
+collected and variance. **A fuel product is filed as a person's money, at HIGH confidence, with
+`needsReview: false`** — so it never reaches the review queue, and `attendantReadingsFromFields`
+(`parsing/attendantVariance.ts:131`) groups it as a settled, non-provisional row because
+`provisional` is derived from those same flags. The profiling screen would show an attendant called
+AGO_DIESEL owed TZS 502.597 who handed over TZS 3,998. The three attendants who are actually on the
+report — `AMINA MOHAMMED SHARIF`, `RAHMA HAMISI`, `ZAINABU SELEMANI`, under "Attendant Collection" —
+are not read at all. This is the exact harm the attendant-identity design exists to prevent, and it
+is reached by a route the design does not cover: not a bad name match, but a parser section landing
+on the wrong table.
+
+The immediate cause is a word rather than a layout — `SECTION_HEADERS.attendant` is
+`/\bATTENDANTS?\b/i` (`parsing/petronite.ts:109`), the report uses "Attendant" as a column heading
+on earlier tables, and so the block opens early and closes on the products. That one is fixable
+locally. What is not fixable by the same move is the rest of the list: no totalizer, no
+reconciliation, no mobile money, a tank section whose rows are shaped differently, and a grouped
+two-column table layout whose line reconstruction interleaves `PUMP 2 / AGO` product labels with
+unrelated data rows.
+
+**Why this is reported and not patched.** Each misparse above has a plausible local fix — anchor the
+attendant block on the word "Collection", accept "AMOUNT COLLECTED" as `cash_collected`, match
+"Stock Movement By Tank" — and each one widens the template until the threshold stops meaning
+anything. A gate that accepts a document with no totalizer, no reconciliation and no mobile money is
+not testing for a Petronite shift report; it is testing for the vendor's name, and the two markers
+that carry the decision are matching column headers. The honest reading is that **there are at least
+two Petronite report layouts**, and this parser was written against neither of them — `:32-44` was
+written from the spec's structure, and no real sample had been seen. Whether this layout replaces
+the assumed one, whether the parser grows a per-layout dispatch, or whether the marker set is
+re-chosen from the real documents, is a coverage decision with a cost attached. So: **status left
+PARTIAL, nothing patched around, and the sample left untracked in the repository root** for that
+decision to be made deliberately.
 
 ---
 
@@ -177,12 +258,22 @@ they come before any feature work.
   `tank:1:closing_dip = 11500`, and `GET /api/tanks/leakage` returned `Tank 1` (Diesel, threshold
   100) at 500 L missing with a `single_shift` alert and `unmapped: []` — the parser's key
   resolving to the settings-written slug, end to end. The suite proves each half; this is the
-  join between them, which is where the feature was broken.
-- **Open, and it needs a real report to close:** `book_stock` is treated as a *closing* figure.
-  The parser cannot tell from the label alone, and if it is an opening figure the variance is
-  offset by one shift rather than wrong in size. **Validate against a real Petronite report before
-  acting on an alert.** Same fixture caveat as the rest of the suite: no real report has ever been
-  seen, so the documents are built to the spec's structure.
+  join between them, which is where the feature was broken. **One correction, now that a real
+  report exists:** the file was a genuine PDF but its *text* was the suite's invented fixture built
+  to the spec's structure, so that run proved the join and not that this report shape occurs in the
+  wild. It does not — see the next bullet.
+- **`book_stock` is a closing figure — settled, on the real report's own labeling.** The real
+  sample's tank table header reads `Fuel Tank Opening Balance RTT Addition Liters Sold Book Stock
+  Closing Dipping Variance`, which places `Book Stock` after `Liters Sold` and immediately before
+  `Closing Dipping` — the *expected closing* slot — and the report's own figures agree:
+  `AGO 3   954.054  0  0  192.597  761.457  762.162  0.705` (954.054 − 192.597 = 761.457, and
+  762.162 − 761.457 = 0.705) and `AGO 4  29,692.308  0  0  510  29,182.308  29,178.846  -3.462`.
+  The one-shift-offset worry is therefore answered: it is a closing figure, and the variance is
+  against the same shift's dip. **What this does not close is the feature's real-data coverage.**
+  The parser reads **zero** tank fields from that report, whose section is "Stock Movement By Tank"
+  with rows shaped `AGO 1 14,536.842 …` rather than `TANK 1 PMS …` (see Module 1's finding). The
+  answer is known; nothing can act on it until the tank section reads a real report. Do not read an
+  alert as covering real Petronite data on the strength of this module alone.
 
 ---
 
@@ -414,7 +505,10 @@ which names nobody") so that moving it is a deliberate change rather than a drif
 5. ~~`0.7` Password reset / email delivery~~ **DONE** — see the P2 list below
 
 **P1 — core reconciliation completeness**
-5. Module 1 hardening — **PARTIAL**: CI and real-PDF-in-CI are done; OCR is absent by design and template coverage is blocked on a real sample (see Module 1)
+5. Module 1 hardening — **PARTIAL**: CI and real-PDF-in-CI are done, and OCR is absent by design.
+   Template coverage is no longer *blocked* on a sample — one arrived, and it does not match the
+   template. That is a finding, written up under Module 1, and it is a decision to make rather than
+   work to sequence
 6. ~~Failed / Needs-Review queue as a dedicated view~~ **DONE**
 7. ~~Module 3 — wet-stock leakage~~ **DONE**
 8. ~~Module 2 — attendant micro-loss profiling~~ **DONE**
@@ -428,8 +522,12 @@ which names nobody") so that moving it is a deliberate change rather than a drif
     them by `GET /api/shift-reports/:id`. Found while re-reading the attendant screen's own
     reasoning, not from a report. See the closing note under "ATTENDANT-facing screen".
 
-**P1 is complete.** Module 1's two remaining open items are blocked on inputs the repository does
-not have — a real Petronite sample, and an OCR engine — and not on work that can be sequenced here.
+**P1 is complete.** Module 1's remaining open item is no longer blocked on a missing input: the real
+Petronite sample the plan had been waiting for arrived, and it does not match the template — it
+misreads the report's Cash Sales product table as attendant rows and files fuel products as named
+people's money, unflagged. That is written up under Module 1 with the stored `ExtractedField` values
+as evidence. OCR is still absent by design, and widening the template is a coverage decision for a
+human, not a patch to make quietly.
 One question is open rather than blocked, and it is recorded as such: whether an attendant may read
 the station's *collective* figures — the report list and the dashboard — which name nobody and
 which the station assignment already answers. See "ATTENDANT-facing screen".
@@ -441,11 +539,21 @@ which the station assignment already answers. See "ATTENDANT-facing screen".
 13. ~~Password reset / email delivery (`0.7`)~~ **DONE**
 
 **Phase 0 and the sequenced P2 list are complete.** What is left is not a queue of screens:
-Module 1's parser coverage is blocked on a real Petronite sample, and the deployment half of
-`0.7` — an actual `SMTP_URL` and a public `APP_URL` — is an operational decision rather than
-code. Until those are set, password reset answers 503 in production by design.
+Module 1's parser does not match the real Petronite report that arrived, and closing that means
+choosing what the template should be and re-testing against real documents; the deployment half of
+`0.7` — an actual `SMTP_URL` and a public `APP_URL` — is an operational decision rather than code.
+Until those are set, password reset answers 503 in production by design.
 
-**No known defect is open.** The last two were both flags the product had written and then left
+**One known defect is open, and it is the first one this document has had to record rather than
+close.** A real Petronite report is accepted by the 3-marker gate and then read along the wrong
+lines: the Cash Sales product table is parsed as attendant rows, so `AGO - DIESEL` is filed as a
+person owed TZS 502.597 who collected TZS 3,998, at HIGH confidence and with `needsReview: false`,
+and the three attendants actually printed on the report are not read at all. It is left open
+deliberately — patching it locally would widen the template until the threshold means nothing, and
+which layout the parser should be built for is a coverage decision. Module 1 carries the evidence;
+the sample is in the repository root.
+
+**Both of the closed defects were the same shape** — a flag the product had written and then left
 without a way to act on. An unreadable attendant row was a review flag with no control that could
 clear it, so a report carrying one sat in NEEDS_REVIEW for good (P1 item 11). And an attendant was
 refused every colleague's figures by `/attendants/profiles` while `GET /shift-reports/:id` served
