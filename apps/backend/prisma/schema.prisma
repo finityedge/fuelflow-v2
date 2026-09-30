@@ -239,6 +239,18 @@ enum FieldConfidence {
   LOW
 }
 
+/// What a human did to settle one figure.
+///
+/// Two things clear the review flag and they are not the same thing: a reviewer who reads
+/// the paper and replaces the value has *corrected* it, and one who reads the paper and
+/// finds the parsed value right has *accepted* it. Recorded rather than inferred, because
+/// nothing else on the row tells them apart — and "the number was never touched" is exactly
+/// what an owner is asking about when a variance disappears after review.
+enum FieldReviewAction {
+  CORRECTED
+  ACCEPTED
+}
+
 /// The four areas the review screen groups fields into. Mirrors ExtractedFieldGroup
 /// in the parser's pure types.
 enum ExtractedFieldGroup {
@@ -297,9 +309,14 @@ model ExtractedField {
   reviewNote    String?
   /// The report text around this field, so a human can see what the parser saw.
   regionText    String?
-  /// Set when a human replaces the parsed value; the flag clears at the same moment.
+  /// When and by whom this figure was last settled — corrected or accepted. The flag clears
+  /// at the same moment. The column names are older than the accept path and still read
+  /// correctly for the correction case; `reviewAction` below is what says which happened.
   correctedAt   DateTime?
   correctedBy   String?
+  /// Which of the two acts settled this row. Null on a figure no human has touched, which
+  /// is every field the parser read without asking for help.
+  reviewAction  FieldReviewAction?
   /// Why the reviewer changed this figure, in their own words.
   ///
   /// Who and when is only half an audit trail. A figure read off the page as 450,000 and

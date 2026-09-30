@@ -23,6 +23,12 @@ export type ShiftReportState = 'PENDING' | 'PARSED' | 'NEEDS_REVIEW' | 'FAILED';
 /** How sure the parser is of one field. LOW means "a human should look at this". */
 export type FieldConfidence = 'HIGH' | 'LOW';
 
+/**
+ * What a human did to settle a flagged figure. Mirrors `FieldReviewAction` in the Prisma
+ * schema, where the reasoning lives.
+ */
+export type FieldReviewAction = 'CORRECTED' | 'ACCEPTED';
+
 /** The four areas the review screen groups extracted fields into. */
 export type ExtractedFieldGroup =
   | 'CASH_PAYMENTS'
@@ -99,6 +105,16 @@ export interface ExtractedField {
   regionText?: string | null;
   correctedAt?: string | null;
   correctedBy?: string | null;
+  /**
+   * Which act settled this figure: a reviewer who read the paper and replaced the value
+   * corrected it, and one who read the paper and found the parsed value right accepted it.
+   *
+   * Null on a figure no human has touched. The two clear the review flag identically, so
+   * without this the screen could not tell them apart and would have to describe a figure
+   * nobody changed as "corrected" — a false statement about the number, and the one a
+   * station owner is checking for when a variance disappears after review.
+   */
+  reviewAction?: FieldReviewAction | null;
   /**
    * Why the reviewer replaced the value, in their own words.
    *

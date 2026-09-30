@@ -206,6 +206,39 @@ export async function correctField(
   return (await res.json()) as { field: ExtractedField; status: string };
 }
 
+/** Why the server refused to sign off a figure the caller named. */
+export type AcceptSkipReason = 'not_found' | 'not_flagged' | 'nothing_read';
+
+export interface AcceptFieldsResult {
+  /** The figures this request settled. */
+  accepted: string[];
+  /** The ids that were not settled, with the reason for each. */
+  skipped: { fieldId: string; reason: AcceptSkipReason }[];
+  /** The report's review state after the write. */
+  status: string | null;
+}
+
+/**
+ * Settle several flagged figures at once, each keeping the value it already has.
+ *
+ * Only ids are sent. Accepting means the stored figure is right, so there is nothing to send
+ * back — and a call that carried the values would be able to change a number under a label
+ * that says it was left alone.
+ */
+export async function acceptFields(
+  reportId: string,
+  fieldIds: string[]
+): Promise<AcceptFieldsResult> {
+  const res = await apiClient(`/shift-reports/${encodeURIComponent(reportId)}/fields/accept`, {
+    method: 'POST',
+    body: JSON.stringify({ fieldIds }),
+  });
+  if (!res.ok) {
+    throw await readError(res, 'Those figures could not be signed off.');
+  }
+  return (await res.json()) as AcceptFieldsResult;
+}
+
 export async function reparseShiftReport(id: string): Promise<void> {
   const res = await apiClient(`/shift-reports/${encodeURIComponent(id)}/reparse`, { method: 'POST' });
   if (!res.ok) {

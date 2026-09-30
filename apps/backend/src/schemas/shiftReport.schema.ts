@@ -31,6 +31,25 @@ export const correctFieldBodySchema = z.object({
  */
 export const LIST_STATUS_VALUES = ['PENDING', 'NEEDS_REVIEW', 'PARSED', 'FAILED'] as const;
 
+/**
+ * Figure ids a reviewer is signing off unchanged.
+ *
+ * Only ids travel, and that is the point rather than an omission: accepting says the figure
+ * already on the row is right, so a body that also carried a value would be a second, worse
+ * spelling of the correction endpoint — two ways to write the same column, with the accept
+ * one silently able to move a figure it claims not to have touched.
+ *
+ * The ceiling is a page of figures rather than a report. The largest real card here carries a
+ * couple of dozen rows, and a caller sending more than a hundred ids is not signing off one
+ * shift's worth of paper.
+ */
+export const acceptFieldsBodySchema = z.object({
+  fieldIds: z
+    .array(z.string().trim().min(1).max(100))
+    .min(1)
+    .max(100),
+});
+
 /** An ISO calendar day, which is how a date range arrives from a date input. */
 const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected a date in YYYY-MM-DD form');
 
@@ -53,5 +72,6 @@ export const ACCEPTED_UPLOAD_MIME = 'application/pdf';
 /** 15 MB. A shift report is a few pages; anything larger is the wrong file. */
 export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
+export type AcceptFieldsBody = z.infer<typeof acceptFieldsBodySchema>;
 export type CorrectFieldBody = z.infer<typeof correctFieldBodySchema>;
 export type ListShiftReportsQuery = z.infer<typeof listShiftReportsQuerySchema>;

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import type {
   DashboardTrendPoint,
-  ExtractedFieldGroup,
+  ExtractedField,
   ShiftReportDetail,
   ShiftReportListItem,
 } from '@fuelflow/shared';
@@ -30,20 +30,53 @@ import {
 } from '../components/icons.js';
 import { useAuthStore } from '../stores/authStore.js';
 import { canCorrect } from '../lib/rbac.js';
-import { correctField, getNextUnreviewed, getShiftReport, reparseShiftReport } from '../lib/shiftReports.js';
+import {
+  acceptFields,
+  correctField,
+  getNextUnreviewed,
+  getShiftReport,
+  reparseShiftReport,
+} from '../lib/shiftReports.js';
 import { getDashboard } from '../lib/dashboard.js';
 import { formatRelativeTime, formatReportDateLong } from '../lib/format.js';
 
 /** How far back the trend beside the variance looks. Two months of shifts at one a day. */
 const TREND_DAYS = 30;
 
-/** Which card a flagged figure sits in, so the review notice can send someone to it. */
-const CARD_FOR_GROUP: Record<ExtractedFieldGroup, { id: string; label: string }> = {
-  CASH_PAYMENTS: { id: 'card-cash', label: 'Cash & payments' },
-  CREDIT_SALES: { id: 'card-credit', label: 'Credit sales' },
-  ATTENDANT_RECONCILIATION: { id: 'card-attendants', label: 'Attendant reconciliation' },
-  TANK_READINGS: { id: 'card-tanks', label: 'Tank readings' },
-};
+/**
+ * Bring something on the page into view.
+ *
+ * Every action on this screen settles a figure, which changes which rows are still asking for a
+ * person — so each one has to leave the reader looking at wherever the work now is rather than
+ * where it was. `block: 'center'` rather than the default: scrolled to the top edge a flagged row
+ * sits under the page header and the thing being pointed at goes missing.
+ */
+function reveal(selector: string) {
+  const element = document.querySelector(selector);
+  if (element instanceof HTMLElement) {
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+/**
+ * The next figure still waiting after the one the reviewer was on.
+ *
+ * Scans forward from where they were and wraps at the end, so "next" always lands somewhere: a
+ * walk-through that dead-ends on the last row and offers nothing is no use in the middle of a
+ * backlog. The figure just settled is no longer flagged by the time this runs, so it is not in
+ * the list to be found and the scan returns the first one still waiting instead.
+ */
+function nextWaiting(fields: ExtractedField[], after: string | null): ExtractedField | null {
+  const waiting = fields.filter((field) => field.needsReview);
+  if (waiting.length === 0) {
+    return null;
+  }
+  const index = waiting.findIndex((field) => field.id === after);
+  return waiting[(index + 1) % waiting.length] ?? waiting[0]!;
+}
+
+/** The one element that is always on the page to say where the review stands. */
+const REVIEW_STATUS_ID = 'review-status';
 
 function MetaChip({
   icon: Icon,
@@ -91,9 +124,30 @@ export function ShiftReport() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /**
+   * Something true and worth reading that is not a failure.
+   *
+   * Only ever a partial accept: the server settles what it can and names what it would not, and
+   * "3 of 4 accepted, one had already been checked" is neither an error nor a full success.
+   * Reported in the error box it would look like something broke.
+   */
+  const [notice, setNotice] = useState<string | null>(null);
   const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
+  const [accepting, setAccepting] = useState(false);
   const [reparsing, setReparsing] = useState(false);
+
+  /** The figure the walk-through is pointing at, drawn with a ring so it can be found again. */
+  const [focusedFieldId, setFocusedFieldId] = useState<string | null>(null);
+  /**
+   * What to scroll to after the last action, as a CSS selector. A selector rather than a field
+   * id because the walk-through has two destinations: the next flagged figure, and the notice
+   * that says there are none left.
+   *
+   * Held in state so the scroll happens after React has drawn the row — the reload replaces the
+   * whole detail, so the element being aimed at does not exist until that render has happened.
+   */
+  const [revealTarget, setRevealTarget] = useState<string | null>(null);
 
   /**
    * Whether this report was opened from the review queue.
@@ -195,6 +249,23 @@ export function ShiftReport() {
   const stationId = detail?.report.stationId;
   const reportStatus = detail?.report.status;
 
+  useEffect(() => {
+    if (revealTarget) {
+      reveal(revealTarget);
+    }
+  }, [revealTarget]);
+
+  /**
+   * Point the walk-through at the next figure, or at the notice that says there is none.
+   *
+   * Clearing the ring when nothing is waiting is deliberate: a ring left on a settled figure
+   * would claim there is still something to do on it.
+   */
+  const advance = useCallback((field: ExtractedField | null) => {
+    setFocusedFieldId(field ? field.id : null);
+    setRevealTarget(field ? `[data-field-id="${CSS.escape(field.id)}"]` : `#${REVIEW_STATUS_ID}`);
+  }, []);
+
   /**
    * The trend is context, not the point of the screen.
    *
@@ -284,19 +355,76 @@ export function ShiftReport() {
       }
       setSavingFieldId(fieldId);
       setSaveError(null);
+      setNotice(null);
       try {
         await correctField(id, fieldId, value, note);
         // Re-read rather than patch in place: the variance, the per-row differences and the
         // report's review state are all derived from the fields, and the server derives them.
-        await load();
+        const next = await load();
         setEditingFieldId(null);
+        // Then move on by itself. A manager working through a backlog has just been given the
+        // answer to "what next?" — making them find it with the scroll wheel is the whole thing
+        // this flow exists to stop.
+        advance(next ? nextWaiting(next.fields, fieldId) : null);
       } catch (error) {
         setSaveError(error instanceof Error ? error.message : 'That change could not be saved.');
       } finally {
         setSavingFieldId(null);
       }
     },
-    [id, load]
+    [id, load, advance]
+  );
+
+  /**
+   * Accept figures as they stand — one from a row, or a card's worth in one request.
+   *
+   * Not a correction with the same value sent back: accepting says the stored figure is right,
+   * so nothing travels but the ids, and the server records it as an acceptance rather than a
+   * change. That distinction is the reason the review screen can say "accepted as read" about a
+   * number it did not touch.
+   */
+  const handleAccept = useCallback(
+    async (fieldIds: string[]) => {
+      if (!id || fieldIds.length === 0) {
+        return;
+      }
+      setAccepting(true);
+      setSaveError(null);
+      setNotice(null);
+      try {
+        const result = await acceptFields(id, fieldIds);
+        const next = await load();
+
+        // What the server would not take, said plainly rather than as a failure. It refuses
+        // three things and each is a different sentence: a figure a colleague settled in another
+        // tab, a figure with nothing read to accept, and one that is not on this report at all.
+        const already = result.skipped.filter((row) => row.reason === 'not_flagged').length;
+        const blank = result.skipped.filter((row) => row.reason === 'nothing_read').length;
+        const missing = result.skipped.filter((row) => row.reason === 'not_found').length;
+        const reasons: string[] = [];
+        if (already > 0) {
+          reasons.push(`${already} had already been checked`);
+        }
+        if (blank > 0) {
+          reasons.push(`${blank} have no figure to accept — type one in instead`);
+        }
+        if (missing > 0) {
+          reasons.push(`${missing} are no longer on this report`);
+        }
+        if (reasons.length > 0) {
+          setNotice(`${result.accepted.length} accepted. ${reasons.join('; ')}.`);
+        }
+
+        advance(next ? nextWaiting(next.fields, focusedFieldId) : null);
+      } catch (error) {
+        setSaveError(
+          error instanceof Error ? error.message : 'Those figures could not be accepted.'
+        );
+      } finally {
+        setAccepting(false);
+      }
+    },
+    [id, load, advance, focusedFieldId]
   );
 
   const handleReparse = useCallback(async () => {
@@ -305,6 +433,7 @@ export function ShiftReport() {
     }
     setReparsing(true);
     setSaveError(null);
+    setNotice(null);
     try {
       await reparseShiftReport(id);
       await load();
@@ -356,17 +485,34 @@ export function ShiftReport() {
     mayCorrect,
     editingFieldId,
     savingFieldId,
+    accepting,
+    focusedFieldId,
     start: setEditingFieldId,
     cancel: () => setEditingFieldId(null),
     save: handleCorrect,
+    accept: handleAccept,
   };
 
   const hasCredit = fields.some((field) => field.fieldName.startsWith('credit_sale:'));
   const hasAttendants = fields.some((field) => field.fieldName.startsWith('attendant:'));
   const hasTanks = fields.some((field) => field.fieldName.startsWith('tank:'));
 
-  const firstFlagged = fields.find((field) => field.needsReview) ?? null;
-  const target = firstFlagged ? CARD_FOR_GROUP[firstFlagged.group] : null;
+  const flaggedFields = fields.filter((field) => field.needsReview);
+  /**
+   * How far through the review the manager is.
+   *
+   * Counted from figures a human actually settled rather than from everything that is no longer
+   * flagged: a figure the parser read at high confidence was never put in front of anybody, and
+   * counting it as checked would inflate the progress with work nobody did.
+   */
+  const settledCount = fields.filter((field) => field.correctedAt).length;
+  const walkTarget = nextWaiting(fields, focusedFieldId);
+  /**
+   * Whether there is anywhere to walk to. With one figure left and the ring already on it, "next"
+   * would land on the row the reader is looking at — a button that visibly does nothing.
+   */
+  const canWalk =
+    walkTarget !== null && !(flaggedFields.length === 1 && walkTarget.id === focusedFieldId);
   const isPlotted = trend?.some((point) => point.reportId === report.id) ?? false;
 
   const heading = (
@@ -416,6 +562,13 @@ export function ShiftReport() {
           <div className="flex items-start gap-3 rounded-xl bg-error-subtle p-4" aria-live="assertive">
             <AlertIcon className="h-5 w-5 shrink-0 text-error" />
             <p className="text-sm text-error">{saveError}</p>
+          </div>
+        )}
+
+        {notice && (
+          <div className="flex items-start gap-3 rounded-xl bg-primary-subtle p-4" role="status">
+            <InfoIcon className="h-5 w-5 shrink-0 text-primary" />
+            <p className="text-sm text-primary">{notice}</p>
           </div>
         )}
 
@@ -508,28 +661,51 @@ export function ShiftReport() {
         {!isParsing && !isFailed && (
           <>
             {needsReviewCount > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-warning-subtle p-4">
+              <div
+                id={REVIEW_STATUS_ID}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-warning-subtle p-4"
+              >
                 <div className="flex items-center gap-3">
                   <AlertIcon className="h-5 w-5 shrink-0 text-warning" />
-                  <p className="text-sm font-semibold text-warning">
-                    {needsReviewCount} figure{needsReviewCount === 1 ? '' : 's'} need
-                    {needsReviewCount === 1 ? 's' : ''} your review before this shift is settled.
-                  </p>
+                  <div>
+                    <p className="text-sm font-semibold text-warning">
+                      {needsReviewCount} figure{needsReviewCount === 1 ? '' : 's'} still need
+                      {needsReviewCount === 1 ? 's' : ''} your review before this shift is settled.
+                    </p>
+                    {/* Both numbers, because "4 left" alone cannot tell a manager who has been
+                        interrupted whether they are near the end of this report or at the
+                        start of it. Absent until the first figure is settled — a progress line
+                        reading "0 of 4" is just the sentence above it said twice. */}
+                    {settledCount > 0 && (
+                      <p className="mt-0.5 text-xs text-warning/80">
+                        {settledCount} of {settledCount + needsReviewCount} flagged figures
+                        checked.
+                      </p>
+                    )}
+                  </div>
                 </div>
-                {target && (
-                  <a
-                    href={`#${target.id}`}
-                    className="inline-flex items-center gap-1 text-sm font-semibold text-warning underline decoration-warning/40 underline-offset-2 hover:decoration-warning"
+                {canWalk && walkTarget && (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded text-sm font-semibold text-warning underline decoration-warning/40 underline-offset-2 hover:decoration-warning focus:outline-none focus-visible:ring-2 focus-visible:ring-warning/30"
+                    onClick={() => advance(walkTarget)}
                   >
-                    Start with {target.label}
+                    {flaggedFields.length === 1
+                      ? 'Go to it'
+                      : focusedFieldId
+                        ? 'Next flagged figure'
+                        : 'Start with the first flagged figure'}
                     <ChevronRightIcon className="h-4 w-4" />
-                  </a>
+                  </button>
                 )}
               </div>
             )}
 
             {isComplete && (
-              <div className="flex items-center gap-3 rounded-xl bg-success-subtle p-4">
+              <div
+                id={REVIEW_STATUS_ID}
+                className="flex items-center gap-3 rounded-xl bg-success-subtle p-4"
+              >
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-success text-white">
                   <CheckIcon className="h-4 w-4" />
                 </div>

@@ -3,10 +3,12 @@ import { UserRole } from '@fuelflow/shared';
 import {
   ACCEPTED_UPLOAD_MIME,
   MAX_UPLOAD_BYTES,
+  acceptFieldsBodySchema,
   correctFieldBodySchema,
   listShiftReportsQuerySchema,
 } from '../schemas/shiftReport.schema.js';
 import {
+  acceptExtractedFields,
   correctExtractedField,
   createShiftReport,
   getShiftReportDetail,
@@ -209,6 +211,50 @@ export async function shiftReportRoutes(app: FastifyInstance) {
 
       // The report's review state comes back with the field so the screen can move
       // straight to "Reconciliation Complete" without a second round trip.
+      return reply.send(result);
+    }
+  );
+
+  /**
+   * Settle several flagged figures at once, each keeping the value it already has.
+   *
+   * Not a loop over the PATCH above, and not only because of the round trips: the PATCH takes a
+   * value, and "accept" is precisely the statement that the stored value is right. Reaching for
+   * the correction route here would mean sending the figure back from the browser to have the
+   * server store what it already had — which is a request that can change a number while telling
+   * the audit trail nobody touched it.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/shift-reports/:id/fields/accept',
+    { preHandler: canManage },
+    async (request, reply) => {
+      const user = requireRequestUser(request);
+      const id = parseRouteId(request.params.id);
+      if (!id) {
+        return reply.status(400).send({ error: 'Invalid report id' });
+      }
+
+      // The report is loaded first so station access is checked before anything is written —
+      // same order as the single-field route, and for the same reason.
+      const report = await prisma.shiftReport.findUnique({ where: { id } });
+      if (!report) {
+        return reply.status(404).send({ error: 'Shift report not found' });
+      }
+      if (!hasStationAccess(user, report.stationId)) {
+        return reply.status(403).send({ error: 'Forbidden: station access denied' });
+      }
+
+      const body = acceptFieldsBodySchema.parse(request.body);
+      const result = await acceptExtractedFields(id, body.fieldIds, user.id);
+
+      // Every id belongs to another report or to none. That is a different mistake from "these
+      // figures are already settled", and it is the client having lost track of which report it
+      // is looking at — so it gets the same 404 the single-field route gives for a field from
+      // somewhere else, rather than a 200 reporting that nothing happened.
+      if (result.accepted.length === 0 && result.skipped.every((row) => row.reason === 'not_found')) {
+        return reply.status(404).send({ error: 'None of those figures are on this report' });
+      }
+
       return reply.send(result);
     }
   );

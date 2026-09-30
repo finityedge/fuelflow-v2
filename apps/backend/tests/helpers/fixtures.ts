@@ -62,6 +62,30 @@ export const PARTIAL_REPORT_LINES = [
   'RECONCILIATION',
 ];
 
+/**
+ * A tidy report with two manual entries rather than one.
+ *
+ * Every manual expense, discount or write-off is flagged on purpose, every time: they are the
+ * entries nothing else on the report can corroborate. That makes them the smallest document
+ * that puts *two* flagged figures on the review screen at once — the case a batch acceptance
+ * exists for, and the one no other fixture covers.
+ */
+export const TWO_ADJUSTMENTS_REPORT_LINES = [
+  ...TIDY_REPORT_LINES,
+  'Shift expense .................. 25,000',
+];
+
+/**
+ * A report that is both short-read and manually adjusted.
+ *
+ * The single state a batch has to be able to report honestly: figures with something to sign
+ * off as read, and figures with nothing read to sign off at all, arriving in one request.
+ */
+export const MIXED_REPORT_LINES = [
+  ...PARTIAL_REPORT_LINES,
+  'Cashback discount .............. 50,000',
+];
+
 /** A document that is not a shift report at all. */
 export const NOT_A_REPORT_LINES = [
   'INVOICE 4471',

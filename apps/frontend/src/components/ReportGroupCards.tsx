@@ -1,7 +1,7 @@
-import type { ComponentType, ReactNode, SVGProps } from 'react';
+import { useState, type ComponentType, type ReactNode, type SVGProps } from 'react';
 import type { ExtractedField } from '@fuelflow/shared';
 import { FieldValue, RowFlags, type CorrectionSession } from './FieldValue.js';
-import { PlateIcon, TankIcon, UsersIcon, WalletIcon } from './icons.js';
+import { CheckIcon, PlateIcon, TankIcon, UsersIcon, WalletIcon } from './icons.js';
 import { formatNumber } from '../lib/format.js';
 import {
   VARIANCE_PILL,
@@ -41,6 +41,7 @@ function GroupCard({
   title,
   subtitle,
   unit,
+  action,
   footer,
   children,
 }: {
@@ -49,6 +50,8 @@ function GroupCard({
   subtitle: string;
   /** Stated once rather than repeated on every figure. */
   unit: string;
+  /** A control for the card as a whole rather than for one of its rows. */
+  action?: ReactNode;
   footer?: ReactNode;
   children: ReactNode;
 }) {
@@ -67,10 +70,89 @@ function GroupCard({
         </span>
       </header>
 
+      {action}
+
       <div className="flex-1 divide-y divide-border">{children}</div>
 
       {footer}
     </section>
+  );
+}
+
+/**
+ * Sign off every figure this card still has flagged, without opening them one at a time.
+ *
+ * The only control on the screen that settles figures the reviewer has not been shown singly,
+ * so it asks first and names the count — and the confirmation says what accepting records,
+ * because "accept" is a word that could be read as "dismiss".
+ *
+ * `fields` is the list the card renders, not every field in its group. A figure that is not on
+ * the card must not be settleable from it: that would be a reviewer vouching for something that
+ * was never on their screen.
+ *
+ * Inline rather than a modal: the count is the whole message, and a dialog would cover the very
+ * figures it is asking about.
+ */
+function AcceptAllBar({ fields, session }: { fields: ExtractedField[]; session: CorrectionSession }) {
+  const [confirming, setConfirming] = useState(false);
+
+  /**
+   * Only figures that have something to accept.
+   *
+   * A field the parser could not read has no value to confirm — "yes, that nothing is right" is
+   * not a review — and the server refuses those too. Filtered here as well so the count on the
+   * button is the number of figures that will actually be settled.
+   */
+  const flagged = fields.filter((field) => field.needsReview && field.parsedValue?.trim());
+
+  // One is the row's own business: it is already wearing a written "Accept". Absent rather than
+  // disabled, because a card with nothing waiting should not be offering to do anything.
+  if (!session.mayCorrect || flagged.length < 2) {
+    return null;
+  }
+
+  const count = flagged.length;
+
+  return (
+    <div className="border-b border-border bg-slate-50 px-5 py-2">
+      {confirming ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold text-body">
+            Accept {count} figures as read? This records that you checked them.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn-primary px-3 py-1.5 text-xs"
+              disabled={session.accepting}
+              onClick={() => {
+                setConfirming(false);
+                void session.accept(flagged.map((field) => field.id));
+              }}
+            >
+              {session.accepting ? 'Accepting…' : 'Yes, accept them'}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost px-2.5 py-1.5 text-xs"
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded text-xs font-semibold text-primary transition-colors hover:text-primary-dark focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+          disabled={session.accepting}
+          onClick={() => setConfirming(true)}
+        >
+          <CheckIcon className="h-3.5 w-3.5" />
+          Accept all {count} remaining
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -137,9 +219,19 @@ export function CashPaymentsCard({
   const totalizer = totalizerField(fields);
   /** Deposits and manual entries: recorded on the report, but not subtracted in the variance. */
   const recorded = [...view.deposits, ...view.adjustments];
+  /** Every figure this card shows, which is every figure it may sign off in one go. */
+  const shown = [view.cash, ...view.mobile, ...recorded, totalizer].filter(
+    (field): field is ExtractedField => field !== null
+  );
 
   return (
-    <GroupCard icon={WalletIcon} title="Cash & payments" subtitle="Taken in during this shift" unit="TZS">
+    <GroupCard
+      icon={WalletIcon}
+      title="Cash & payments"
+      subtitle="Taken in during this shift"
+      unit="TZS"
+      action={<AcceptAllBar fields={shown} session={session} />}
+    >
       <FigureRow label="Cash collected" field={view.cash} session={session} />
 
       {view.mobile.map((field) => (
@@ -152,6 +244,26 @@ export function CashPaymentsCard({
         <FigureRow key={field.id} label={field.label} field={field} session={session} />
       ))}
 
+      {/* A figure in its own right, and one the parser can flag — so it is a row like any other
+          rather than a sentence in the footer. It was the note that said it, and a note has no
+          "Accept" and no pencil: a totalizer read at low confidence used to be a flag the
+          manager could see explained and never clear. */}
+      {totalizer && (
+        <Row flagged={totalizer.needsReview}>
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-body">Pump totalizer sales</p>
+              <p className="mt-0.5 text-xs text-muted">
+                What the shift sold, not what it took in — the figure the variance subtracts the
+                payments above from, which is why it is not counted in the total.
+              </p>
+            </div>
+            <FieldValue field={totalizer} session={session} format={formatNumber} />
+          </div>
+          <RowFlags fields={[totalizer]} />
+        </Row>
+      )}
+
       <CardTotal
         label="Counted in the variance"
         value={view.countedTotal === null ? '—' : formatNumber(view.countedTotal)}
@@ -163,14 +275,6 @@ export function CashPaymentsCard({
               : 'Cash and mobile money — the two payment figures the variance subtracts.'
         }
       />
-
-      {totalizer && (
-        <p className="border-t border-border px-5 py-3 text-xs text-muted">
-          Pump totalizer sales ({formatNumber(totalizer.amount ?? null)}) is what the shift
-          <em> sold</em>, not what it took in, so it is not counted here — it is the figure the
-          variance subtracts these payments from.
-        </p>
-      )}
     </GroupCard>
   );
 }
@@ -194,6 +298,7 @@ export function CreditSalesCard({
       title="Credit sales"
       subtitle="Vehicles on credit, to be collected"
       unit="TZS"
+      action={<AcceptAllBar fields={view.rows.map((row) => row.field)} session={session} />}
       footer={
         <CardTotal
           label="Total credit sales"
@@ -260,6 +365,17 @@ export function AttendantCard({
   session: CorrectionSession;
 }) {
   const view = attendantView(fields);
+  /**
+   * What this card shows a control against, and therefore what it may sign off in one go.
+   *
+   * The *difference* is left out deliberately: it is a subtraction of the two figures beside it,
+   * so accepting it would be accepting arithmetic. The unreadable row is left out for a
+   * different reason — it stands for two figures that could not be told apart, and there is
+   * nothing on it to confirm. Both are explained on the card itself.
+   */
+  const shown = view.rows
+    .flatMap((row) => [row.toCollect, row.collected])
+    .filter((field): field is ExtractedField => field !== null);
 
   return (
     <GroupCard
@@ -267,6 +383,7 @@ export function AttendantCard({
       title="Attendant reconciliation"
       subtitle="Collected against what was expected"
       unit="TZS"
+      action={<AcceptAllBar fields={shown} session={session} />}
       footer={
         <div className="border-t border-border bg-slate-50">
           <div className="flex items-baseline justify-between gap-4 px-5 py-4">
@@ -349,6 +466,18 @@ export function AttendantCard({
 
             <RowFlags fields={[row.unreadable, row.toCollect, row.collected]} />
 
+            {/* The one flagged field on this screen with no control of its own, so it says so
+                rather than leaving a flag nobody can clear. Its line could not be split into
+                the two figures the card compares, and neither accepting nor correcting one
+                number would produce the other — the reviewer has to read the paper. */}
+            {row.unreadable && (
+              <p className="mt-2 text-xs text-muted">
+                The two figures on this row could not be told apart, so there is nothing here to
+                accept. Open “Show what was read from the PDF” below to check the line against
+                the paper report.
+              </p>
+            )}
+
             {/* Spelled out because the two words mean opposite things to two readers: the
                 figure is what the attendant owes against what they handed over. */}
             {tone === 'short' && row.varianceAmount !== null && (
@@ -409,6 +538,10 @@ export function TankReadingsCard({
   session: CorrectionSession;
 }) {
   const view = tankView(fields);
+  /** The two figures each row prints. The difference beneath them is derived, never flagged. */
+  const shown = view.rows
+    .flatMap((row) => [row.bookStock, row.closingDip])
+    .filter((field): field is ExtractedField => field !== null);
 
   return (
     <GroupCard
@@ -416,6 +549,7 @@ export function TankReadingsCard({
       title="Tank readings"
       subtitle="Book stock against the closing dip (litres)"
       unit="Litres"
+      action={<AcceptAllBar fields={shown} session={session} />}
       footer={
         <CardTotal
           label="Total difference across tanks"

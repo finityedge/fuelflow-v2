@@ -26,6 +26,7 @@ vi.mock('../src/jobs/queues.js', () => ({ enqueuePdfParse }));
 
 import { prisma, withTenantScope } from '../src/prisma/client.js';
 import {
+  acceptExtractedFields,
   correctExtractedField,
   createShiftReport,
   getShiftReportDetail,
@@ -35,15 +36,19 @@ import {
 } from '../src/services/shiftReport.service.js';
 import { buildImageOnlyPdf, buildTextPdf } from './helpers/pdf.js';
 import {
+  MIXED_REPORT_LINES,
   NOT_A_REPORT_LINES,
   PARTIAL_REPORT_LINES,
   TIDY_REPORT_LINES,
+  TWO_ADJUSTMENTS_REPORT_LINES,
 } from './helpers/fixtures.js';
 
 let storageDir: string;
 let tenantId: string;
 let stationId: string;
 let userId: string;
+/** A second manager, so "who settled this" is a question the tests can actually answer. */
+let otherUserId: string;
 
 /** Upload a document and run the parse, returning the report id. */
 async function uploadAndProcess(lines: string[], fileName = 'shift.pdf'): Promise<string> {
@@ -86,6 +91,16 @@ beforeAll(async () => {
     },
   });
   userId = user.id;
+
+  const other = await prisma.user.create({
+    data: {
+      tenantId,
+      email: `integration-second-${tenant.id}@example.test`,
+      passwordHash: 'not-used-by-these-tests',
+      role: 'MANAGER',
+    },
+  });
+  otherUserId = other.id;
 }, 60_000);
 
 afterAll(async () => {
@@ -312,6 +327,204 @@ describe('correcting a flagged field', () => {
     const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
     const reread = after.fields.find((field) => field.id === target.id)!;
     expect(reread.correctionNote).toBe('Cashback discount was 150,000 on the paper slip');
+  }, 90_000);
+});
+
+describe('accepting a flagged field', () => {
+  it('clears the flag without touching the figure, and records that nobody changed it', async () => {
+    const id = await uploadAndProcess(TIDY_REPORT_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const target = before.fields.find((field) => field.needsReview)!;
+
+    const result = await withTenantScope(tenantId, () =>
+      acceptExtractedFields(id, [target.id], userId)
+    );
+
+    expect(result.accepted).toEqual([target.id]);
+    expect(result.skipped).toEqual([]);
+    expect(result.status).toBe('PARSED');
+
+    const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const reread = after.fields.find((field) => field.id === target.id)!;
+
+    // The whole of what "accept" means: the figure the parser read is the figure that stays.
+    expect(reread.parsedValue).toBe(target.parsedValue);
+    expect(reread.amount).toBe(target.amount);
+    expect(reread.needsReview).toBe(false);
+    // And the record says a person looked and did not change anything, which is the fact the
+    // correction path cannot express.
+    expect(reread.reviewAction).toBe('ACCEPTED');
+    expect(reread.correctedBy).toBe(userId);
+    expect(reread.correctedAt).not.toBeNull();
+    expect(reread.correctionNote).toBeNull();
+
+    // Signing a figure off is not a correction, so the headline number must not move.
+    expect(after.summary.variance).toBe(before.summary.variance);
+  }, 60_000);
+
+  it('settles a batch in one request, and reports the report’s state once it is done', async () => {
+    const id = await uploadAndProcess(TWO_ADJUSTMENTS_REPORT_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const flagged = before.fields.filter((field) => field.needsReview);
+    // Two manual entries, both read cleanly: the case a batch exists for is settling the whole
+    // queue of a report in one go, which needs more than one figure and needs all of them to
+    // have something to agree with.
+    expect(flagged).toHaveLength(2);
+    expect(flagged.every((field) => field.parsedValue?.trim())).toBe(true);
+
+    const result = await withTenantScope(tenantId, () =>
+      acceptExtractedFields(
+        id,
+        flagged.map((field) => field.id),
+        userId
+      )
+    );
+
+    expect(result.accepted).toHaveLength(flagged.length);
+    expect(result.skipped).toEqual([]);
+    // Nothing is left asking for a person, so the report leaves the queue — which is the whole
+    // point of being able to settle several figures without reloading between each.
+    expect(result.status).toBe('PARSED');
+
+    const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    expect(after.needsReviewCount).toBe(0);
+    for (const field of flagged) {
+      const reread = after.fields.find((row) => row.id === field.id)!;
+      expect(reread.reviewAction).toBe('ACCEPTED');
+      expect(reread.parsedValue).toBe(field.parsedValue);
+    }
+  }, 60_000);
+
+  it('refuses a figure with nothing read, rather than clearing the flag off an empty row', async () => {
+    const id = await uploadAndProcess(PARTIAL_REPORT_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const blank = before.fields.find((field) => field.needsReview && !field.parsedValue)!;
+    expect(blank).toBeTruthy();
+
+    const result = await withTenantScope(tenantId, () =>
+      acceptExtractedFields(id, [blank.id], userId)
+    );
+
+    expect(result.accepted).toEqual([]);
+    expect(result.skipped).toEqual([{ fieldId: blank.id, reason: 'nothing_read' }]);
+
+    // Still flagged: "accept the reading of nothing" would have settled a figure the manager
+    // has never seen a number for.
+    const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const reread = after.fields.find((field) => field.id === blank.id)!;
+    expect(reread.needsReview).toBe(true);
+    expect(reread.reviewAction).toBeNull();
+  }, 60_000);
+
+  it('settles what it can of a mixed batch and names the rest', async () => {
+    const id = await uploadAndProcess(MIXED_REPORT_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const flagged = before.fields.filter((field) => field.needsReview);
+    const readable = flagged.find((field) => field.parsedValue?.trim())!;
+    const blank = flagged.find((field) => !field.parsedValue)!;
+    // One report carrying both states at once: figures a person can sign off as read, and
+    // figures nobody has seen a number for.
+    expect(readable).toBeTruthy();
+    expect(blank).toBeTruthy();
+
+    const result = await withTenantScope(tenantId, () =>
+      acceptExtractedFields(id, [readable.id, blank.id], userId)
+    );
+
+    // Partial, and reported as partial rather than as a failed request: the manager signed off
+    // a figure and it was signed off.
+    expect(result.accepted).toEqual([readable.id]);
+    expect(result.skipped).toEqual([{ fieldId: blank.id, reason: 'nothing_read' }]);
+    expect(result.status).toBe('NEEDS_REVIEW');
+  }, 60_000);
+
+  it('refuses a figure that is already settled, and leaves the first record standing', async () => {
+    const id = await uploadAndProcess(TIDY_REPORT_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const target = before.fields.find((field) => field.needsReview)!;
+
+    await withTenantScope(tenantId, () => acceptExtractedFields(id, [target.id], userId));
+    // A colleague, in another tab, on a report that is already settled.
+    const again = await withTenantScope(tenantId, () =>
+      acceptExtractedFields(id, [target.id], otherUserId)
+    );
+
+    expect(again.accepted).toEqual([]);
+    expect(again.skipped).toEqual([{ fieldId: target.id, reason: 'not_flagged' }]);
+
+    // The second attempt wrote nothing: the first reviewer and the first moment are still the
+    // record. Re-stamping would quietly rewrite who checked the figure.
+    const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const reread = after.fields.find((field) => field.id === target.id)!;
+    expect(reread.correctedBy).toBe(userId);
+  }, 60_000);
+
+  it('refuses a figure that belongs to another report', async () => {
+    const mine = await uploadAndProcess(TIDY_REPORT_LINES);
+    const other = await uploadAndProcess(TIDY_REPORT_LINES);
+    const elsewhere = (await withTenantScope(tenantId, () => getShiftReportDetail(other)))!.fields.find(
+      (field) => field.needsReview
+    )!;
+
+    const result = await withTenantScope(tenantId, () =>
+      acceptExtractedFields(mine, [elsewhere.id], userId)
+    );
+
+    expect(result.accepted).toEqual([]);
+    expect(result.skipped).toEqual([{ fieldId: elsewhere.id, reason: 'not_found' }]);
+
+    // And the report the figure really belongs to is untouched — naming an id against the wrong
+    // report must not settle it on the right one.
+    const after = (await withTenantScope(tenantId, () => getShiftReportDetail(other)))!;
+    expect(after.needsReviewCount).toBe(1);
+  }, 90_000);
+
+  it('settles an id sent twice once, rather than reporting it as both accepted and skipped', async () => {
+    const id = await uploadAndProcess(TIDY_REPORT_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const target = before.fields.find((field) => field.needsReview)!;
+
+    const result = await withTenantScope(tenantId, () =>
+      acceptExtractedFields(id, [target.id, target.id], userId)
+    );
+
+    expect(result.accepted).toEqual([target.id]);
+    expect(result.skipped).toEqual([]);
+  }, 60_000);
+
+  it('does nothing at all for an empty list', async () => {
+    const id = await uploadAndProcess(TIDY_REPORT_LINES);
+
+    const result = await withTenantScope(tenantId, () => acceptExtractedFields(id, [], userId));
+
+    expect(result.accepted).toEqual([]);
+    expect(result.skipped).toEqual([]);
+    // The report is left asking for a person, which is what it was doing before.
+    expect(result.status).toBe('NEEDS_REVIEW');
+  }, 60_000);
+
+  it('records a correction and an acceptance differently on the row', async () => {
+    const id = await uploadAndProcess(TIDY_REPORT_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const target = before.fields.find((field) => field.needsReview)!;
+
+    // The two clear the same flag and carry the same reviewer, so the only thing that tells
+    // them apart is the action — which is exactly why it is stored.
+    const corrected = await withTenantScope(tenantId, () =>
+      correctExtractedField(target.id, { parsedValue: '120,000' }, userId)
+    );
+    expect(corrected!.field.reviewAction).toBe('CORRECTED');
+
+    const accepted = await withTenantScope(tenantId, () =>
+      acceptExtractedFields(id, [target.id], userId)
+    );
+    // Already settled by the correction above, so it is refused rather than relabelled: a
+    // correction that a later accept could rewrite into "nobody touched this" would erase the
+    // only record that somebody did.
+    expect(accepted.skipped).toEqual([{ fieldId: target.id, reason: 'not_flagged' }]);
+
+    const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    expect(after.fields.find((field) => field.id === target.id)!.reviewAction).toBe('CORRECTED');
   }, 90_000);
 });
 

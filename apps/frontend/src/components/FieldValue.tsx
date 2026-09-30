@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ExtractedField } from '@fuelflow/shared';
-import { AlertIcon, CloseIcon, PencilIcon } from './icons.js';
+import { AlertIcon, CheckIcon, CloseIcon, PencilIcon } from './icons.js';
 import { formatTZS } from '../lib/format.js';
 
 /**
@@ -14,9 +14,19 @@ export interface CorrectionSession {
   mayCorrect: boolean;
   editingFieldId: string | null;
   savingFieldId: string | null;
+  /** Set while a batch accept is in flight, so every button in the batch knows to wait. */
+  accepting: boolean;
+  /**
+   * The figure the walk-through is currently pointing at, or at least the one it last moved
+   * to. Drawn with a ring because "next flagged figure" that lands the reader on a row
+   * identical to its neighbours has not taken them anywhere.
+   */
+  focusedFieldId: string | null;
   start: (fieldId: string) => void;
   cancel: () => void;
   save: (fieldId: string, value: string, note?: string) => Promise<void>;
+  /** Sign off figures as they stand — one id, or a card's worth in one request. */
+  accept: (fieldIds: string[]) => Promise<void>;
 }
 
 interface FieldValueProps {
@@ -129,9 +139,21 @@ export function FieldValue({ field, session, format = formatTZS, size = 'md', ab
     field.amount !== null && field.amount !== undefined
       ? format(field.amount)
       : (field.parsedValue ?? '—');
+  // Only worth pointing at while it is still asking for a person. A ring around a figure that
+  // is already settled would send the reviewer to a row with nothing left to do on it.
+  const focused = session.focusedFieldId === field.id && flag;
+  /** Whether there is a figure here to agree with, as opposed to a label with nothing under it. */
+  const hasFigure = Boolean(field.parsedValue?.trim());
 
   return (
-    <span className="inline-flex items-center justify-end gap-2">
+    <span
+      className={`inline-flex items-center justify-end gap-2 rounded-lg ${
+        focused ? 'bg-primary-subtle px-2 py-1 ring-2 ring-primary/40' : ''
+      }`}
+      // How the page finds this figure again to scroll to it — the walk-through holds ids, not
+      // element references, and the DOM it is pointing into is rebuilt on every reload.
+      data-field-id={field.id}
+    >
       <span
         className={`font-mono font-semibold tabular-nums ${SIZE[size]} ${
           flag ? 'text-warning' : 'text-body'
@@ -142,18 +164,43 @@ export function FieldValue({ field, session, format = formatTZS, size = 'md', ab
 
       {session.mayCorrect &&
         (flag ? (
-          <button
-            type="button"
-            className="btn-secondary px-2.5 py-1 text-xs"
-            onClick={() => session.start(field.id)}
-          >
-            <PencilIcon className="h-3.5 w-3.5" />
-            Correct
-          </button>
+          <>
+            {/* The other half of the action, and the one that was missing: a low-confidence read
+                is often simply right, and a screen offering only "Correct" makes the reviewer
+                retype a figure they can already see is correct — which would also record a
+                correction to a value nobody changed.
+
+                Absent when nothing was read here at all. There is no figure to agree with, and
+                the server refuses those too, so offering the button would only produce a
+                refusal the reviewer could have been spared. */}
+            {hasFigure && (
+              <button
+                type="button"
+                className="btn-secondary px-2.5 py-1 text-xs"
+                disabled={session.accepting}
+                onClick={() => void session.accept([field.id])}
+                aria-label={`Accept ${field.label} as read`}
+                title={`Accept ${field.label} as read`}
+              >
+                <CheckIcon className="h-3.5 w-3.5" />
+                Accept
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn-secondary px-2.5 py-1 text-xs"
+              disabled={session.accepting}
+              onClick={() => session.start(field.id)}
+            >
+              <PencilIcon className="h-3.5 w-3.5" />
+              Correct
+            </button>
+          </>
         ) : (
           <button
             type="button"
             className="rounded-lg p-1.5 text-muted transition-colors hover:bg-slate-100 hover:text-primary"
+            disabled={session.accepting}
             onClick={() => session.start(field.id)}
             aria-label={`Correct ${field.label}`}
             title={`Correct ${field.label}`}
@@ -175,10 +222,20 @@ export function FieldValue({ field, session, format = formatTZS, size = 'md', ab
 export function RowFlags({ fields }: { fields: (ExtractedField | null | undefined)[] }) {
   const present = fields.filter((field): field is ExtractedField => Boolean(field));
   const flagged = present.filter((field) => field.needsReview);
-  const corrected = present.filter((field) => field.correctedAt && !field.needsReview);
+  const settled = present.filter((field) => field.correctedAt && !field.needsReview);
+  /**
+   * Signing a figure off and changing it look identical on the row, so the two are read apart
+   * here: `ACCEPTED` means a person read the paper and left the number as it was.
+   *
+   * Anything that is not `ACCEPTED` counts as a correction, including a null action — rows
+   * settled before this distinction existed were corrections, because correcting was the only
+   * way to settle anything.
+   */
+  const accepted = settled.filter((field) => field.reviewAction === 'ACCEPTED');
+  const corrected = settled.filter((field) => field.reviewAction !== 'ACCEPTED');
   const evidence = flagged.filter((field) => field.regionText);
 
-  if (flagged.length === 0 && corrected.length === 0) {
+  if (flagged.length === 0 && settled.length === 0) {
     return null;
   }
 
@@ -206,6 +263,13 @@ export function RowFlags({ fields }: { fields: (ExtractedField | null | undefine
             {field.reviewNote}
           </p>
         ))}
+
+      {accepted.length > 0 && (
+        <p className="text-xs text-muted">
+          Accepted as read
+          {accepted.length > 1 ? ` (${accepted.length} figures)` : ''}
+        </p>
+      )}
 
       {corrected.length > 0 && (
         <p className="text-xs text-muted">

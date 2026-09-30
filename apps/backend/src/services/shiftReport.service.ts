@@ -371,6 +371,10 @@ export async function correctExtractedField(
       reviewNote: null,
       correctedAt: new Date(),
       correctedBy: userId,
+      // Recorded rather than left to be inferred: an accepted figure and a corrected one both
+      // clear the flag and both carry a reviewer, and the row itself does not otherwise say
+      // which happened.
+      reviewAction: 'CORRECTED',
       // The rationale describes *this* correction, so a later correction replaces it — the
       // same single-slot treatment `correctedAt`/`correctedBy` already get. Keeping a full
       // revision history of every correction is a larger feature; this is not pretending to
@@ -387,6 +391,109 @@ export async function correctExtractedField(
   });
 
   return { field: serializeField(updated), status: report?.status ?? 'PENDING' };
+}
+
+/** Why a figure the caller named was not signed off. */
+export type AcceptSkipReason = 'not_found' | 'not_flagged' | 'nothing_read';
+
+export interface AcceptExtractedFieldsResult {
+  /** The figures this request settled. */
+  accepted: string[];
+  /**
+   * The ids that were not settled, with the reason for each.
+   *
+   * Returned rather than thrown so a partly-satisfiable batch still settles what it can — and
+   * so the screen can say "5 of 8 accepted" and name what stopped the other three, instead of
+   * reporting success for a batch it only half-did.
+   */
+  skipped: { fieldId: string; reason: AcceptSkipReason }[];
+  /** The report's review state after the write, or null if the report vanished under us. */
+  status: string | null;
+}
+
+/**
+ * Settle a batch of flagged figures that the reviewer is happy with as they stand.
+ *
+ * The same act as a correction minus the value: a person has read the figure against the paper
+ * and it is right. It is recorded as `ACCEPTED` rather than being folded into the correction
+ * path because "nobody changed this number, it was checked" is the answer to the question that
+ * gets asked later — why the variance did not move after review.
+ *
+ * One request rather than one per figure for a reason beyond the round trips: a manager signing
+ * off a card is making a single judgement about a set of figures, and a batch that half-applied
+ * would leave them unable to say which half they had actually vouched for.
+ */
+export async function acceptExtractedFields(
+  shiftReportId: string,
+  fieldIds: string[],
+  userId: string
+): Promise<AcceptExtractedFieldsResult> {
+  // Deduplicated, so an id sent twice is settled once and reported once rather than appearing
+  // under both `accepted` and `skipped`.
+  const unique = [...new Set(fieldIds)];
+
+  const rows = await prisma.extractedField.findMany({
+    where: { id: { in: unique }, shiftReportId },
+    select: { id: true, parsedValue: true, needsReview: true },
+  });
+  const byId = new Map(rows.map((row) => [row.id, row]));
+
+  const accepted: string[] = [];
+  const skipped: { fieldId: string; reason: AcceptSkipReason }[] = [];
+
+  for (const fieldId of unique) {
+    const row = byId.get(fieldId);
+
+    if (!row) {
+      // Not on this report, or nowhere at all. Both are a caller naming a figure that is not
+      // the one in front of them, and neither is something to write to.
+      skipped.push({ fieldId, reason: 'not_found' });
+    } else if (!row.needsReview) {
+      // Already settled. Refused rather than re-stamped: accepting it again would overwrite the
+      // reviewer and the moment of the first acceptance, which is the whole audit trail.
+      skipped.push({ fieldId, reason: 'not_flagged' });
+    } else if (!row.parsedValue?.trim()) {
+      // The parser read nothing here. "Accept the reading of nothing" is not a review — it would
+      // clear the flag off a figure that is still not on the screen — so this one is skipped and
+      // someone has to supply a value by hand.
+      skipped.push({ fieldId, reason: 'nothing_read' });
+    } else {
+      accepted.push(fieldId);
+    }
+  }
+
+  if (accepted.length > 0) {
+    const now = new Date();
+
+    // One transaction, because a batch that half-applied would settle figures the reviewer
+    // never vouched for and leave no way to tell which ones.
+    await prisma.$transaction(
+      accepted.map((fieldId) =>
+        prisma.extractedField.update({
+          where: { id: fieldId },
+          data: {
+            // `parsedValue` and `amount` are deliberately untouched. That is the entire
+            // difference between this and `correctExtractedField`.
+            confidence: 'HIGH',
+            needsReview: false,
+            reviewNote: null,
+            correctedAt: now,
+            correctedBy: userId,
+            reviewAction: 'ACCEPTED',
+          },
+        })
+      )
+    );
+
+    await refreshReportStatus(shiftReportId);
+  }
+
+  const report = await prisma.shiftReport.findUnique({
+    where: { id: shiftReportId },
+    select: { status: true },
+  });
+
+  return { accepted, skipped, status: report?.status ?? null };
 }
 
 /** Queue another parse attempt for a stored report — the retry path after a failure. */
@@ -439,6 +546,7 @@ function serializeField(field: ExtractedFieldRow) {
     regionText: field.regionText,
     correctedAt: field.correctedAt ? field.correctedAt.toISOString() : null,
     correctedBy: field.correctedBy,
+    reviewAction: field.reviewAction,
     correctionNote: field.correctionNote,
     createdAt: field.createdAt.toISOString(),
     updatedAt: field.updatedAt.toISOString(),
