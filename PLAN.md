@@ -249,7 +249,6 @@ suggest otherwise. The sample is unmodified, because a fixture that has been tid
 the document the parser has to read; it is simply not published. The PDF is kept out for the same
 reason and a second one — `pdfText` has its own tests, and the parser's contract is text.
 
-
 ---
 
 ## Module 2 — Attendant Micro-Loss Profiling
