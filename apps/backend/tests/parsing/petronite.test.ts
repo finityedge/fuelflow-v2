@@ -210,6 +210,55 @@ describe('parseShiftReportText - messy report', () => {
   });
 });
 
+/**
+ * Two people whose names begin with an initial, on one report.
+ *
+ * This is a regression test for a merge that happened silently. The attendant parser stripped a
+ * leading index with the same rule the tank parser uses, and that rule also removes a single
+ * leading letter — so `J. MWANGI` and `P. MWANGI` both became `MWANGI` and the two people
+ * shared one key. Nothing downstream could tell them apart afterwards: every shift either of
+ * them worked landed on one record, and one of them would be shown the other's shortfalls.
+ *
+ * The failure is worth its own fixture because it is the exact harm the attendant-identity work
+ * exists to prevent, arriving from the other direction. There, a similarity rule might guess
+ * that two names are one person; here a string was made identical before any rule could run.
+ */
+const REPORT_INITIALS = `PETRONITE FUEL STATION
+SHIFT REPORT
+Date: 2026-03-15
+
+ATTENDANTS
+J. MWANGI ....... 3,200,000 3,150,000
+P. MWANGI ....... 1,800,000 1,700,000
+2. GRACE KIMARO .... 5,000,000 5,000,000
+
+RECONCILIATION
+`;
+
+describe('parseShiftReportText - attendants with initials', () => {
+  const result = parseShiftReportText(REPORT_INITIALS);
+
+  it('keys each initialled name by the initial, so two people do not become one', () => {
+    expect(fieldOf(result.fields, 'attendant:J_MWANGI:expected')?.amount).toBe(3_200_000);
+    expect(fieldOf(result.fields, 'attendant:P_MWANGI:expected')?.amount).toBe(1_800_000);
+
+    // The claim in one line: the two spellings produced two keys, not one.
+    const keys = result.fields
+      .map((field) => field.fieldName)
+      .filter((name) => name.startsWith('attendant:MWANGI'));
+    expect(keys).toEqual([]);
+  });
+
+  it('still strips a row number, which is what the stripper is for', () => {
+    expect(fieldOf(result.fields, 'attendant:GRACE_KIMARO:expected')?.amount).toBe(5_000_000);
+    expect(fieldOf(result.fields, 'attendant:GRACE_KIMARO:collected')?.amount).toBe(5_000_000);
+  });
+
+  it('names each attendant by what the report printed, without the dot leaders', () => {
+    expect(fieldOf(result.fields, 'attendant:J_MWANGI:expected')?.label).toBe('J. MWANGI - to collect');
+  });
+});
+
 describe('parseShiftReportText - partial failure', () => {
   const result = parseShiftReportText(REPORT_C);
 
@@ -345,7 +394,11 @@ describe('parseShiftReportText - wrong document', () => {
     const result = parseShiftReportText('   \n\n  \n');
 
     expect(result.status).toBe('FAILED');
-    expect(result.failureReason).toMatch(/no text could be extracted/i);
+    // Empty text is what a scan produces as well as what a blank document does, so the
+    // message has to name both causes and what to do about each — see the integration
+    // suite, which drives the same branch through a real image-only PDF.
+    expect(result.failureReason).toMatch(/no text could be read/i);
+    expect(result.failureReason).toMatch(/scan or a photograph/i);
     expect(result.fields).toEqual([]);
   });
 });

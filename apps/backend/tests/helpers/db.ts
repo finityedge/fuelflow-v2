@@ -20,7 +20,22 @@ import { prisma } from '../../src/prisma/client.js';
 export async function resetDatabase(): Promise<void> {
   await prisma.extractedField.deleteMany();
   await prisma.shiftReport.deleteMany();
+  // Named explicitly even though `Station` cascades to both. This helper's own rule is that
+  // children go first, and here that was true only by way of a cascade nobody wrote down —
+  // so a future model hung off Station would be silently covered or silently missed
+  // depending on which relation attribute somebody happened to type.
+  //
+  // Aliases lead the attendants they belong to: an alias row points at an `Attendant`, so
+  // deleting attendants first would fail on the foreign key. This is the "children go first"
+  // rule doing exactly the job it was written for.
+  await prisma.attendantAlias.deleteMany();
+  await prisma.attendant.deleteMany();
+  await prisma.tank.deleteMany();
   await prisma.stationAssignment.deleteMany();
+  // Cascades from `User`, and named anyway for the reason above: a suite that registers a user,
+  // requests a reset and forgets to clean up would otherwise leave a live token pointing at a
+  // deleted row until this helper happened to run.
+  await prisma.passwordResetToken.deleteMany();
   await prisma.station.deleteMany();
   await prisma.user.deleteMany();
   await prisma.tenant.deleteMany();

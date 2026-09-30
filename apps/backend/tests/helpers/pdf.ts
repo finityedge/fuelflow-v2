@@ -21,16 +21,8 @@ const PAGE_HEIGHT = 792;
 const START_Y = 750;
 const LEADING = 14;
 
-export function buildTextPdf(lines: string[]): Buffer {
-  const content = [
-    'BT',
-    '/F1 10 Tf',
-    `50 ${START_Y} Td`,
-    `${LEADING} TL`,
-    ...lines.flatMap((line) => [`(${escapeText(line)}) Tj`, 'T*']),
-    'ET',
-  ].join('\n');
-
+/** Wrap content-stream operators in a real, single-page PDF with a correct xref table. */
+function assemblePdf(content: string): Buffer {
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
@@ -66,4 +58,37 @@ export function buildTextPdf(lines: string[]): Buffer {
   ].join('\n');
 
   return Buffer.from(header + body + xref, 'latin1');
+}
+
+export function buildTextPdf(lines: string[]): Buffer {
+  const content = [
+    'BT',
+    '/F1 10 Tf',
+    `50 ${START_Y} Td`,
+    `${LEADING} TL`,
+    ...lines.flatMap((line) => [`(${escapeText(line)}) Tj`, 'T*']),
+    'ET',
+  ].join('\n');
+
+  return assemblePdf(content);
+}
+
+/**
+ * A valid PDF with a page, ink on it, and no text layer — what a scan of a report is.
+ *
+ * This is the case the text-only parser cannot serve, and the one most likely to arrive in
+ * real life: a station prints the shift report, runs it through the office scanner, and
+ * uploads the scan. It is a well-formed file, not a corrupt one, which is exactly why it
+ * needs its own fixture — a corrupt-file test proves the error is caught, not that a
+ * *legitimate* unreadable document is reported as what it is.
+ *
+ * The page draws two filled rectangles inside a `q`/`Q` save-restore, so pdfjs sees real
+ * graphics operators and genuinely zero text items.
+ */
+export function buildImageOnlyPdf(): Buffer {
+  const content = ['q', '0.2 0.2 0.2 rg', '50 700 500 60 re', 'f', '50 80 500 40 re', 'f', 'Q'].join(
+    '\n'
+  );
+
+  return assemblePdf(content);
 }

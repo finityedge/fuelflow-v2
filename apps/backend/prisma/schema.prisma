@@ -14,8 +14,11 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  stations Station[]
-  users    User[]
+  stations   Station[]
+  users      User[]
+  tanks      Tank[]
+  attendants Attendant[]
+  attendantAliases AttendantAlias[]
 }
 
 model Station {
@@ -24,11 +27,136 @@ model Station {
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
   name      String
   location  String?
+  /// Retired stations keep their reports. A site that closes, or a pilot that ends, must not
+  /// take its history with it — and a report that vanished would read as a report that was
+  /// never filed, which is the opposite of what an audit product should imply.
+  isActive  Boolean  @default(true)
+  /// Absolute TZS variance above which one shift is worth a human's attention.
+  ///
+  /// Defaults to 0, which flags every shift that does not balance to the shilling. That is
+  /// deliberate and it is the fail-safe direction: a station that has not chosen a tolerance
+  /// gets told about everything rather than having a tolerance invented for it, and the noise
+  /// is the prompt to go and set a real figure. A default like 50,000 would silently decide
+  /// that a 49,000 TZS shortfall is not worth mentioning, which is a business judgement this
+  /// code has no business making on a station's behalf.
+  varianceThreshold Float @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   shiftReports     ShiftReport[]
   stationAssignments StationAssignment[]
+  tanks            Tank[]
+  attendants       Attendant[]
+  attendantAliases AttendantAlias[]
+}
+
+/// A tank at a station, as an identity the parser's readings can be attached to.
+///
+/// The report prints a tank label and the parser normalises it to a slug for the
+/// `tank:<slug>:book_stock` / `tank:<slug>:closing_dip` field names. A bare slug can say
+/// what one shift's readings were; it cannot say what the tank holds, what grade it is, or
+/// that "Tank 1" and "T1" are the same vessel. A book-versus-dip difference is a number of
+/// litres either way — without a capacity and a grade on a stable row there is nothing to
+/// compare it against and no way to turn it into a loss figure a station owner would accept.
+model Tank {
+  id       String  @id @default(uuid())
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  stationId String
+  station  Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  /// Shown to a human, e.g. "Tank 1".
+  name     String
+  /// The normalised key the parser produces for this tank. Unique per station, because the
+  /// same label at two stations is two different tanks.
+  slug     String
+  /// Product grade. Free text: the report prints what it prints, and the set of grades a
+  /// Tanzanian station sells is not ours to enumerate.
+  product  String?
+  /// Needed before a book-versus-dip difference in litres means anything.
+  capacityLitres Float?
+  /// Litres of book-versus-dip shortfall, on a single shift, that is worth telling somebody
+  /// about. Null means fall back to `DEFAULT_LEAK_THRESHOLD_FRACTION` of `capacityLitres`, and
+  /// with no capacity either, nothing is alerted on alone.
+  ///
+  /// Settable rather than fixed because a threshold the station owner chose is one they will
+  /// believe. A number we picked — and that the owner cannot see or change — produces alerts
+  /// that get ignored, which is the same as having no alerts, except it also costs a screen.
+  leakThresholdLitres Float?
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([stationId, slug])
+}
+
+/// A person whose name appears on a shift report, as a stable identity across shifts.
+///
+/// This is what Module 2 was missing. The parser reads a printed name and slugifies it, so
+/// "J. Mwangi" and "John Mwangi" become two different keys and no cross-shift profile can be
+/// built on them. One row per real person gives the parsed slugs somewhere to point.
+///
+/// Deliberately not `User`. Most attendants named on a shift report never log in — the
+/// manager files the report — and an identity that only existed for people with accounts
+/// would leave out exactly the people whose shortfalls are being tracked.
+model Attendant {
+  id       String  @id @default(uuid())
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  stationId String
+  station  Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  /// The name as it should be shown, e.g. "John Mwangi".
+  name     String
+  /// The normalised key matching the parser's `attendant:<slug>:...` field names.
+  slug     String
+  /// Set when this person also has a login. Unique, so one login is at most one attendant —
+  /// which is the relationship the product actually has: an attendant works at a station, and
+  /// a person appearing on two stations' reports is two identities we would rather merge
+  /// deliberately than allow by accident. Cleared rather than cascaded if the login goes: the
+  /// attendant's shift history does not stop existing because they lost their password.
+  userId   String? @unique
+  user     User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  aliases  AttendantAlias[]
+
+  @@unique([stationId, slug])
+}
+
+/// Another spelling of an attendant's name, claimed by that attendant.
+///
+/// The parser keys a row by the name the report printed, so the same person arrives under
+/// whatever the shift clerk typed that day: `J_MWANGI` on a report where the name was short,
+/// `JOHN_MWANGI` on one where it was not. Without this table those are two people with half a
+/// history each, and a repeated shortfall on one of them is invisible.
+///
+/// Deliberately not a fuzzy match. "J. Mwangi is John Mwangi" is a fact about a workplace,
+/// not about two strings, and a similarity rule that guessed wrong would silently move one
+/// person's shortfall onto a colleague's record — an accusation, made by software, with no
+/// human in the loop. So the link is a row somebody created, and the screen asks for it.
+///
+/// `stationId` is carried alongside `attendantId` even though it is derivable from it, because
+/// the uniqueness that matters is per station — the same printed name at two stations is two
+/// different people — and a constraint cannot reach through a relation.
+model AttendantAlias {
+  id          String @id @default(uuid())
+  tenantId    String
+  tenant      Tenant @relation(fields: [tenantId], references: [id])
+  stationId   String
+  station     Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  attendantId String
+  attendant   Attendant @relation(fields: [attendantId], references: [id], onDelete: Cascade)
+  /// The key the parser produced for this spelling, e.g. `J_MWANGI`.
+  slug        String
+  createdAt   DateTime @default(now())
+
+  /// One printed name belongs to at most one attendant at a station. This is the constraint
+  /// that stops a link made twice from splitting a person's history in half.
+  @@unique([stationId, slug])
+  /// And one attendant may accumulate as many spellings as their reports use, but not the
+  /// same one twice.
+  @@unique([attendantId, slug])
 }
 
 enum UserRole {
@@ -44,13 +172,45 @@ model User {
   email         String
   passwordHash  String
   role          UserRole
+  /// A deactivated user keeps their id, their corrections and their audit trail — the
+  /// `correctedBy` stamps on every field they ever fixed still resolve to a real person.
+  /// Deleting the row would orphan that history, so leaving is a flag, not a delete.
+  isActive      Boolean  @default(true)
   refreshToken  String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   stationAssignments StationAssignment[]
+  /** The attendant record for this login, when this user is also named on shift reports. */
+  attendantProfile   Attendant?
+  passwordResetTokens PasswordResetToken[]
 
   @@unique([email])
+}
+
+/// A single-use, expiring credential for setting a new password.
+///
+/// Deliberately **not** in `TENANT_SCOPED_MODELS`. The flow it serves is the one route in the
+/// product that runs with no session at all: somebody who cannot sign in cannot present a
+/// tenant, and a scope that had to be guessed from the request would be a scope an attacker
+/// chooses. The row is only ever reached by its own hash (which is the secret) or by a
+/// `userId` read while servicing that hash, so there is no cross-tenant read to gate.
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the token that was emailed, never the token itself — the same reason the
+  /// refresh token is stored hashed. A copy of this table must not be a set of working
+  /// credentials, and a reset token is worth more than a session: it ends in a new password.
+  tokenHash String   @unique
+  expiresAt DateTime
+  /// Set the moment it is spent, rather than deleting the row. "This link was already used"
+  /// and "this link was never real" are different answers, and only one of them should send
+  /// somebody looking through their inbox for a newer email.
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model StationAssignment {
@@ -140,6 +300,13 @@ model ExtractedField {
   /// Set when a human replaces the parsed value; the flag clears at the same moment.
   correctedAt   DateTime?
   correctedBy   String?
+  /// Why the reviewer changed this figure, in their own words.
+  ///
+  /// Who and when is only half an audit trail. A figure read off the page as 450,000 and
+  /// changed to 45,000 by a named manager on a known date still does not answer the question
+  /// a station owner asks, which is *why* — and the corrections that most need an answer are
+  /// the ones that removed a variance. Free text, because the reasons are not an enum.
+  correctionNote String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

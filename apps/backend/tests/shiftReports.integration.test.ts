@@ -33,7 +33,7 @@ import {
   processShiftReport,
   reparseShiftReport,
 } from '../src/services/shiftReport.service.js';
-import { buildTextPdf } from './helpers/pdf.js';
+import { buildImageOnlyPdf, buildTextPdf } from './helpers/pdf.js';
 import {
   NOT_A_REPORT_LINES,
   PARTIAL_REPORT_LINES,
@@ -47,13 +47,18 @@ let userId: string;
 
 /** Upload a document and run the parse, returning the report id. */
 async function uploadAndProcess(lines: string[], fileName = 'shift.pdf'): Promise<string> {
+  return uploadBytesAndProcess(buildTextPdf(lines), fileName);
+}
+
+/**
+ * The same, for a fixture that is already bytes.
+ *
+ * A PDF with no text layer cannot be written as lines — that is the whole point of it — so
+ * the scan fixture has to bypass the line-based helper rather than be squeezed through it.
+ */
+async function uploadBytesAndProcess(data: Buffer, fileName: string): Promise<string> {
   const { id } = await withTenantScope(tenantId, () =>
-    createShiftReport({
-      tenantId,
-      stationId,
-      fileName,
-      data: buildTextPdf(lines),
-    })
+    createShiftReport({ tenantId, stationId, fileName, data })
   );
 
   await withTenantScope(tenantId, () => processShiftReport(id, tenantId));
@@ -276,6 +281,38 @@ describe('correcting a flagged field', () => {
     );
     expect(result).toBeNull();
   }, 60_000);
+
+  it('keeps the reviewer’s reason alongside the correction', async () => {
+    const id = await uploadAndProcess(TIDY_REPORT_LINES);
+    const before = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const target = before.fields.find((field) => field.needsReview)!;
+
+    // A note is optional, so a correction without one must still succeed and record nothing
+    // rather than an empty string — a blank note is not a reason, and storing "" would make
+    // "was a reason given?" unanswerable.
+    const plain = await withTenantScope(tenantId, () =>
+      correctExtractedField(target.id, { parsedValue: '120,000' }, userId)
+    );
+    expect(plain!.field.correctionNote).toBeNull();
+
+    const explained = await withTenantScope(tenantId, () =>
+      correctExtractedField(
+        target.id,
+        { parsedValue: '150,000', note: '  Cashback discount was 150,000 on the paper slip  ' },
+        userId
+      )
+    );
+    // Stored trimmed, because the surrounding whitespace is an artifact of typing into a box.
+    expect(explained!.field.correctionNote).toBe(
+      'Cashback discount was 150,000 on the paper slip'
+    );
+
+    // The note reads back on the report the review screen loads, not only on the write result —
+    // a reason that could not be read back would not be evidence of anything.
+    const after = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+    const reread = after.fields.find((field) => field.id === target.id)!;
+    expect(reread.correctionNote).toBe('Cashback discount was 150,000 on the paper slip');
+  }, 90_000);
 });
 
 describe('partial failure', () => {
@@ -379,6 +416,44 @@ describe('total failure', () => {
     expect(report.status).toBe('FAILED');
     expect(report.failureReason).toBeTruthy();
   }, 60_000);
+
+  /**
+   * The scan case: a valid, undamaged PDF that happens to have no text in it.
+   *
+   * This is the most likely failure a real station will hit — print, scan, upload — and the
+   * one the product currently cannot serve, since there is no OCR. The test exists to pin
+   * the *advice*, not just the status code: told only "failed", a manager re-uploads the same
+   * scan until they give up, because nothing in that message says the problem cannot be fixed
+   * by trying again.
+   */
+  it('fails a scan as a scan, and says a scan cannot be read rather than blaming the file', async () => {
+    const id = await uploadBytesAndProcess(buildImageOnlyPdf(), 'scanned-report.pdf');
+    const detail = (await withTenantScope(tenantId, () => getShiftReportDetail(id)))!;
+
+    expect(detail.report.status).toBe('FAILED');
+    // The limitation, stated plainly.
+    expect(detail.report.failureReason).toMatch(/cannot read a scan or a photograph/i);
+    // And the thing to do about it.
+    expect(detail.report.failureReason).toMatch(/upload the file the station exported/i);
+    // Never "corrupt": a scan is a good file, and saying otherwise sends the manager to
+    // re-export a document that was never broken.
+    expect(detail.report.failureReason).not.toMatch(/corrupt/i);
+    expect(detail.fields).toEqual([]);
+  }, 60_000);
+
+  it('distinguishes a scan from a document that is simply the wrong kind of file', async () => {
+    const scanId = await uploadBytesAndProcess(buildImageOnlyPdf(), 'scan.pdf');
+    const invoiceId = await uploadAndProcess(NOT_A_REPORT_LINES, 'invoice.pdf');
+
+    const scan = (await withTenantScope(tenantId, () => getShiftReportDetail(scanId)))!;
+    const invoice = (await withTenantScope(tenantId, () => getShiftReportDetail(invoiceId)))!;
+
+    // Both are FAILED, and both need a different file — but only the invoice is a file we
+    // could have read. Collapsing them into one message would make "this is a scan" and
+    // "this is an invoice" indistinguishable to the person who has to act on it.
+    expect(scan.report.failureReason).not.toBe(invoice.report.failureReason);
+    expect(invoice.report.failureReason).toMatch(/does not match the Petronite/i);
+  }, 90_000);
 });
 
 describe('reparsing', () => {
@@ -438,6 +513,43 @@ describe('listing reports', () => {
     // "Showing 1 of N" is only true if N is the count of matches, not the count returned.
     expect(page.total).toBeGreaterThan(1);
   }, 60_000);
+
+  it('walks the list oldest first, and pages in that order', async () => {
+    await uploadAndProcess(TIDY_REPORT_LINES);
+    await uploadAndProcess(NOT_A_REPORT_LINES, 'invoice.pdf');
+
+    // The whole set in one page, so the two orders are genuinely inverses of each other. With
+    // more rows than fit, the first page of each order contains *different* reports — which is
+    // exactly why the direction has to be the query's job and not a client-side reversal.
+    const oldest = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, order: 'oldest', limit: 100 })
+    );
+    const newest = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, order: 'newest', limit: 100 })
+    );
+
+    const times = oldest.reports.map((entry) => Date.parse(entry.uploadedAt));
+    expect(times.length).toBeGreaterThan(1);
+    // Non-decreasing, so the report that has been waiting longest really is at the top.
+    expect([...times].sort((a, b) => a - b)).toEqual(times);
+    // And the two directions really are opposite ends, so a sort that silently did nothing
+    // would fail here rather than pass by accident.
+    expect(newest.reports[0]!.id).toBe(oldest.reports[oldest.reports.length - 1]!.id);
+    expect(newest.reports[0]!.id).not.toBe(oldest.reports[0]!.id);
+
+    // "Load more" then walks forward through that same order — the second page is older than
+    // the first, which it could not be if the reversal had happened after the query.
+    const firstPage = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, order: 'oldest', limit: 2, offset: 0 })
+    );
+    const secondPage = await withTenantScope(tenantId, () =>
+      listShiftReports({ stationId, order: 'oldest', limit: 2, offset: 2 })
+    );
+
+    expect([...firstPage.reports, ...secondPage.reports].map((entry) => entry.id)).toEqual(
+      oldest.reports.slice(0, 4).map((entry) => entry.id)
+    );
+  }, 90_000);
 
   it('walks the list with an offset without repeating a row', async () => {
     const first = await withTenantScope(tenantId, () =>

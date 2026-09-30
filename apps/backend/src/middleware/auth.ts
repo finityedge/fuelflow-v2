@@ -67,6 +67,14 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
     return reply.status(401).send({ error: 'User not found' });
   }
 
+  // A deactivated user's access token stays cryptographically valid until it expires, so the
+  // flag has to be re-read on every request rather than trusted from the token. This lookup
+  // was already here for the role and station list; refusing here is what makes deactivation
+  // take effect immediately instead of in fifteen minutes.
+  if (!user.isActive) {
+    return reply.status(401).send({ error: 'This account has been deactivated' });
+  }
+
   (request as FastifyRequest & { user: RequestUser }).user = {
     id: user.id,
     tenantId: user.tenantId,

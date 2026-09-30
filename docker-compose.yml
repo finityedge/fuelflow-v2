@@ -69,6 +69,19 @@ services:
       REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       STORAGE_DIR: /app/storage/pdfs
+      # Outbound email. These default to nothing on purpose: with no SMTP_URL and
+      # NODE_ENV=production, nothing can actually be delivered, and /api/auth/forgot-password
+      # answers 503 rather than telling somebody to check an inbox the message never reached.
+      # Set SMTP_URL and APP_URL to turn password reset on. See .env.example.
+      #
+      # APP_URL matters more than it looks. Reset links are built from it, and it has to be the
+      # address a *browser* uses — the compose service name is useless to the recipient, and a
+      # link pointing at `backend:3000` fails on their machine in a way indistinguishable from
+      # an expired link.
+      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-}
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: "${MAIL_FROM:-FuelFlow <no-reply@fuelflow.local>}"
+      APP_URL: ${APP_URL:-}
     volumes:
       - pdf-storage:/app/storage/pdfs
     ports:

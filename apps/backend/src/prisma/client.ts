@@ -1,7 +1,15 @@
 import { PrismaClient } from '@prisma/client';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-const TENANT_SCOPED_MODELS = ['Station', 'User', 'ShiftReport', 'ExtractedField'] as const;
+const TENANT_SCOPED_MODELS = [
+  'Station',
+  'User',
+  'ShiftReport',
+  'ExtractedField',
+  'Tank',
+  'Attendant',
+  'AttendantAlias',
+] as const;
 
 type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 

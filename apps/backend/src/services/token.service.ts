@@ -73,6 +73,7 @@ export function getRefreshCookieOptions(): {
   httpOnly: boolean;
   secure: boolean;
   sameSite: 'strict' | 'lax' | 'none';
+  path: string;
 } {
   const expires = new Date();
   expires.setDate(expires.getDate() + REFRESH_TTL_DAYS);
@@ -82,5 +83,11 @@ export function getRefreshCookieOptions(): {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
+    // Explicit, not left to the default. A cookie with no `path` takes its path from the
+    // request that set it — here `/api/auth/login` — so it would be sent to `/api/auth/*`
+    // and nowhere else. It happens to work today and would silently break the day the
+    // refresh route moves, so it is pinned to the root where it belongs. `clearCookie`
+    // also has to name the same path or the browser keeps the cookie being cleared.
+    path: '/',
   };
 }

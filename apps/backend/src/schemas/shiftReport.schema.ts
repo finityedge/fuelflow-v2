@@ -8,6 +8,16 @@ import { z } from 'zod';
  */
 export const correctFieldBodySchema = z.object({
   parsedValue: z.string().min(1).max(120),
+  /**
+   * Why the reviewer changed the figure. Optional, and deliberately so.
+   *
+   * Requiring it would put a text box in front of the common case — the parser read
+   * `450000` as `45000` and the manager is fixing an obvious slip, where the value itself
+   * is the explanation. But the corrections that matter most for an audit are the ones
+   * that *removed* a variance, and those need a reason on the record. Optional means the
+   * cheap fix stays cheap and the interesting one can still be documented.
+   */
+  note: z.string().trim().max(500).optional(),
 });
 
 /**
@@ -30,6 +40,8 @@ export const listShiftReportsQuerySchema = z.object({
   /** Inclusive, and compared against the report's date — see `listShiftReports`. */
   from: isoDay.optional(),
   to: isoDay.optional(),
+  /** Which end of the list to start from. The review queue asks for `oldest`. */
+  order: z.enum(['newest', 'oldest']).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   /** How many matching reports to skip, for "load more". */
   offset: z.coerce.number().int().min(0).max(100_000).optional(),

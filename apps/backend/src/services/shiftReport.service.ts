@@ -218,6 +218,19 @@ export interface ListShiftReportsOptions {
   /** Inclusive ISO days, matched against the report's own date. */
   from?: string;
   to?: string;
+  /**
+   * Which end of the list to start from. Defaults to `newest`.
+   *
+   * The review queue asks for `oldest`, because it is answering a different question from the
+   * history list. History answers "what happened?" and newest-first is right there. A queue
+   * answers "what should I do next?", and there the report that has been waiting three weeks
+   * is the urgent one — burying it under this morning's upload is how a backlog gets ignored.
+   *
+   * This is a sort rather than a client-side reversal on purpose: reversing a page would
+   * reverse only the page, so "load more" on the queue would splice a newer page underneath
+   * an older one and the order would be nothing anyone asked for.
+   */
+  order?: 'newest' | 'oldest';
   limit?: number;
   offset?: number;
 }
@@ -290,7 +303,7 @@ export async function listShiftReports(
   const [reports, total] = await Promise.all([
     prisma.shiftReport.findMany({
       where,
-      orderBy: { uploadedAt: 'desc' },
+      orderBy: { uploadedAt: options.order === 'oldest' ? 'asc' : 'desc' },
       take: options.limit ?? 25,
       skip: options.offset ?? 0,
       select: {
@@ -336,7 +349,7 @@ export async function listShiftReports(
  */
 export async function correctExtractedField(
   fieldId: string,
-  input: { parsedValue: string },
+  input: { parsedValue: string; note?: string },
   userId: string
 ): Promise<{ field: ReturnType<typeof serializeField>; status: string } | null> {
   const existing = await prisma.extractedField.findUnique({ where: { id: fieldId } });
@@ -345,6 +358,7 @@ export async function correctExtractedField(
   }
 
   const amount = parseAmount(input.parsedValue);
+  const note = input.note?.trim() ? input.note.trim() : null;
 
   const updated = await prisma.extractedField.update({
     where: { id: fieldId },
@@ -357,6 +371,11 @@ export async function correctExtractedField(
       reviewNote: null,
       correctedAt: new Date(),
       correctedBy: userId,
+      // The rationale describes *this* correction, so a later correction replaces it — the
+      // same single-slot treatment `correctedAt`/`correctedBy` already get. Keeping a full
+      // revision history of every correction is a larger feature; this is not pretending to
+      // be it, and a stale note sitting under a newer value would be worse than a replaced one.
+      correctionNote: note,
     },
   });
 
@@ -420,6 +439,7 @@ function serializeField(field: ExtractedFieldRow) {
     regionText: field.regionText,
     correctedAt: field.correctedAt ? field.correctedAt.toISOString() : null,
     correctedBy: field.correctedBy,
+    correctionNote: field.correctionNote,
     createdAt: field.createdAt.toISOString(),
     updatedAt: field.updatedAt.toISOString(),
   };

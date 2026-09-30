@@ -18,6 +18,7 @@
  */
 
 import { findAmounts, firstAmountAfter, hasDigit, parseAmount } from './amount.js';
+import { slugify } from './slug.js';
 import type {
   ExtractedFieldGroup,
   ParsedField,
@@ -202,15 +203,6 @@ function isBlank(line: Line | undefined): boolean {
   return !line || line.flat.length === 0;
 }
 
-function slugify(value: string): string {
-  return value
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 40);
-}
-
 function regionAround(lines: Line[], index: number): string {
   return lines
     .slice(Math.max(0, index - 1), index + 2)
@@ -349,6 +341,24 @@ function stripLeadingIndex(text: string): string {
   return text.replace(/^(?:TANK\s*)?(?:NO\.?\s*)?(?:\d{1,2}|[A-Z])\b[\s.:-]*/i, '');
 }
 
+/**
+ * Remove a leading row number from an attendant line, and nothing else.
+ *
+ * `stripLeadingIndex` also removes a single leading letter, which is right for a tank row and
+ * wrong for this one. An attendant line very often begins with a person's initial, and eating
+ * it collapsed `J. MWANGI` and `P. MWANGI` into the same key — `MWANGI` — so two people on one
+ * station were merged into one profile and each inherited the other's shortfalls. That is the
+ * exact harm the attendant-identity work exists to make impossible, arriving from the other
+ * direction: not a similarity rule guessing two names are one person, but a stripper making
+ * them the same string before anything could tell them apart. `slugify`'s own documentation
+ * promises `J. Mwangi` becomes `J_MWANGI`, and this is what makes that true.
+ *
+ * A numbered attendant list is numbered with digits, so digits are all this removes.
+ */
+function stripLeadingAttendantIndex(text: string): string {
+  return text.replace(/^(?:NO\.?\s*)?\d{1,2}\b[\s.:-]*/i, '');
+}
+
 function parseCreditSales(lines: Line[], range: { start: number; end: number }): ParsedField[] {
   const fields: ParsedField[] = [];
   let unidentified = 0;
@@ -415,11 +425,18 @@ function parseAttendantRows(lines: Line[], range: { start: number; end: number }
       continue;
     }
 
-    const nameMatch = /^([A-Za-z][A-Za-z .'-]{2,40}?)(?=\s{2,}|\s+\d)/.exec(stripLeadingIndex(line.flat));
+    /*
+     * The name and the amounts are read from the *same* string, so the two can never disagree
+     * about where the name ended. Slicing `line.flat` by the length of a match made against the
+     * stripped text took the offset from the wrong string: on a numbered row the name is found
+     * several characters into the line and the slice landed back inside it.
+     */
+    const rowText = stripLeadingAttendantIndex(line.flat);
+    const nameMatch = /^([A-Za-z][A-Za-z .'-]{2,40}?)(?=\s{2,}|\s+\d)/.exec(rowText);
     // Dot leaders are layout, not part of the name, and the lazy match absorbs them.
     const name = nameMatch ? nameMatch[1].replace(/[\s.]+$/, '').trim() : null;
     const slug = name ? slugify(name) : `attendant_${fields.length / 3 + 1}`;
-    const amounts = findAmounts(name && nameMatch ? line.flat.slice(nameMatch[0].length) : line.flat);
+    const amounts = findAmounts(nameMatch ? rowText.slice(nameMatch[0].length) : rowText);
 
     line.consumed = true;
 
@@ -841,7 +858,17 @@ export function parseShiftReportText(rawText: string): ParseResult {
   if (!lines.some((line) => !isBlank(line))) {
     return {
       status: 'FAILED',
-      failureReason: 'No text could be extracted from the uploaded PDF - the file may be corrupted or scanned as an image.',
+      /*
+       * The two causes of empty text are named, in the order they actually occur, because the
+       * advice differs completely and the file itself cannot tell us which it is.
+       *
+       * A scan of a perfectly good report is the common case, and telling that manager their
+       * file "may be corrupted" sends them to re-export a file that was never the problem.
+       * What they need to know is that we read a digital PDF's text layer and cannot read a
+       * picture — a real limitation of this product, stated as one rather than hedged.
+       */
+      failureReason:
+        'No text could be read from this PDF. FuelFlow reads the text layer of a digital PDF and cannot read a scan or a photograph of a report — if this is one, upload the file the station exported instead. If this is the original file, it is damaged and needs exporting again.',
       fields: [],
       summary: emptySummary(),
       diagnostics,

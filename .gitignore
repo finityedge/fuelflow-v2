@@ -38,3 +38,7 @@ apps/backend/storage/
 
 # Docker
 .dockerignore
+
+# Tooling scratch state (oh-my-claudecode and similar). Session-local, machine-specific,
+# and never something a checkout should carry.
+.omc/

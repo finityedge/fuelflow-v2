@@ -1,0 +1,109 @@
+# Verify every push and pull request.
+#
+# There was no CI here at all before this file, which meant the 121-odd tests in
+# `apps/backend/tests` only ran when somebody remembered to run them — and a suite that is
+# not run is a suite that is already failing somewhere. It also meant the parser was only
+# ever exercised against the PDF corpus on one developer's machine.
+#
+# The services below are the real PostgreSQL and Redis, not substitutes. The tests truncate
+# a real database and the tenant-scoping extension is a real Prisma client extension, so a
+# mocked database would test a different program than the one that ships.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch makes the previous run's answer irrelevant, and this job
+# spends most of its time on install and a Postgres schema apply.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Pinned to the same major version the dev stack uses, so a migration that applies
+        # locally applies here.
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: fuelflow
+          POSTGRES_PASSWORD: fuelflow
+          POSTGRES_DB: fuelflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fuelflow -d fuelflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Port 5432 here, not the 5433 the dev stack publishes on the host: that offset exists
+      # only to dodge a PostgreSQL service already bound to 5432 on a Windows developer's
+      # machine, and the runner has no such thing.
+      DATABASE_URL: postgresql://fuelflow:fuelflow@127.0.0.1:5432/fuelflow
+      REDIS_URL: redis://127.0.0.1:6379
+      # Not a secret and not one: `resolveJwtSecret` refuses to boot with the .env.example
+      # placeholder when NODE_ENV is production, and this job never is. It is set anyway so
+      # an unset variable cannot silently change what a test is exercising.
+      JWT_SECRET: ci-only-secret-never-used-to-sign-anything-real
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version comes from the `packageManager` field in package.json, so the pnpm used here
+      # is the pnpm the lockfile was written with.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # Fails rather than quietly resolving a different tree: a lockfile that disagrees with
+      # the manifests is a broken install waiting to happen, and CI is where that should be
+      # discovered.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Before anything typechecks. `@fuelflow/shared` resolves through its built
+      # `dist/index.d.ts`, so on a clean checkout the backend and frontend have no types to
+      # compile against until this has run.
+      - name: Generate Prisma client and build shared
+        run: |
+          pnpm exec prisma generate --schema apps/backend/prisma/schema.prisma
+          pnpm --filter @fuelflow/shared build
+
+      # `deploy`, not `dev`: it applies the committed migration files and refuses to invent
+      # one, so this also proves the migrations in the repository are complete. If a schema
+      # change was made without a migration, the tests below fail on a missing column.
+      - name: Apply migrations
+        run: pnpm exec prisma migrate deploy --schema apps/backend/prisma/schema.prisma
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
+
+      # Last, because it is the slowest and the only step that needs both services.
+      - name: Test
+        run: pnpm test
